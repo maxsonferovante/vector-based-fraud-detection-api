@@ -1,0 +1,8 @@
+build/
+cmake-build-debug/
+.idea/
+.git/
+*.o
+*.a
+*.so
+vector_based_fraud_detection_api

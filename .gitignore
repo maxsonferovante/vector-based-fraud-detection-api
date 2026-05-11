@@ -1,0 +1,54 @@
+# C++ objects and archives
+*.slo
+*.lo
+*.o
+*.obj
+*.suo
+*.tlb
+*.tlh
+*.mac
+*.dll
+*.exe
+*.exe~
+*.ilk
+*.lib
+*.so
+*.so.*
+*.dylib
+*.a
+*.lib
+*.out
+*.app
+
+# CMake
+CMakeCache.txt
+CMakeFiles
+CMakeScripts
+Testing
+Makefile
+cmake_install.cmake
+install_manifest.txt
+compile_commands.json
+CTestTestfile.cmake
+_deps
+CMakeUserPresets.json
+
+# Build directories
+build/
+cmake-build-*/
+out/
+bin/
+
+# IDEs
+.idea/
+*.swp
+*.swo
+.vscode/
+
+# Project specific
+docs/
+container_stats.log
+*.log
+
+# macOS
+.DS_Store

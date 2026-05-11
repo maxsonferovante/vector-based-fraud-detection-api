@@ -1,0 +1,49 @@
+
+services:
+  lb:
+    image: haproxy:2.9-alpine
+    container_name: lb
+    ports:
+      - "9999:9999"
+    volumes:
+      - ./haproxy.cfg:/usr/local/etc/haproxy/haproxy.cfg:ro
+    depends_on:
+      - api1
+      - api2
+    deploy:
+      resources:
+        limits:
+          cpus: '0.10'
+          memory: 15M
+    networks:
+      - rinha-network
+
+  api1:
+    build: .
+    container_name: api1
+    environment:
+      - RESOURCES_DIR=resources
+    deploy:
+      resources:
+        limits:
+          cpus: '0.45'
+          memory: 165M
+    networks:
+      - rinha-network
+
+  api2:
+    build: .
+    container_name: api2
+    environment:
+      - RESOURCES_DIR=resources
+    deploy:
+      resources:
+        limits:
+          cpus: '0.45'
+          memory: 165M
+    networks:
+      - rinha-network
+
+networks:
+  rinha-network:
+    driver: bridge
