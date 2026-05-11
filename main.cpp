@@ -1,6 +1,7 @@
 #include <memory>
 #include <iostream>
 #include <vector>
+#include <thread>
 #include <cstdlib>
 #include "src/application/services/fraud_service.hpp"
 #include "src/infrastructure/adapters/web/web_adapter.hpp"
@@ -51,17 +52,28 @@ int main(int argc, char* argv[]) {
         auto web_adapter = std::make_shared<infrastructure::adapters::web::WebAdapter>(fraud_service);
 
         // 6. Iniciar Servidor HTTP
-        boost::asio::io_context ioc{1};
+        int threads = 2;
+        boost::asio::io_context ioc{threads};
         auto listener = std::make_shared<infrastructure::adapters::web::Listener>(
             ioc, 
             tcp::endpoint{address, port}, 
             web_adapter
         );
 
-        infrastructure::logging::Logger::info("Rinha API started on port " + std::to_string(port));
+        infrastructure::logging::Logger::info("Rinha API started on port " + std::to_string(port) + " with " + std::to_string(threads) + " threads");
         
         listener->run();
+
+        // Rodar ioc em múltiplas threads para evitar bloqueios
+        std::vector<std::thread> v;
+        v.reserve(threads - 1);
+        for(auto i = threads - 1; i > 0; --i)
+            v.emplace_back([&ioc]{ ioc.run(); });
+        
         ioc.run();
+
+        // Aguardar threads (embora ioc.run() bloqueie)
+        for(auto& t : v) t.join();
 
     } catch (const std::exception& e) {
         infrastructure::logging::Logger::error(std::string("Critical error: ") + e.what());

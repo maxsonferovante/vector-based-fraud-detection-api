@@ -28,15 +28,14 @@ public:
         
         quantizer_ = std::make_unique<faiss::IndexFlatL2>(14);
         
-        // High Precision Mode: Reverted to QT_fp16 (~84MB) to eliminate the 60 False Detections
+        // Extreme Performance Mode: SQ8 (42MB) and nprobe=4
         index_ = std::make_unique<faiss::IndexIVFScalarQuantizer>(
             quantizer_.get(), 14, 1024, 
-            faiss::ScalarQuantizer::QT_fp16, 
+            faiss::ScalarQuantizer::QT_8bit, 
             faiss::METRIC_L2
         );
         
-        // Balanced nprobe: 32 provides extreme accuracy (0 FP) but keeps latency < 10ms
-        index_->nprobe = 32;
+        index_->nprobe = 4;
     }
 
     void train(const std::vector<float>& vectors) {
@@ -79,7 +78,7 @@ public:
             if (!raw_index) return false;
             index_.reset(dynamic_cast<faiss::IndexIVFScalarQuantizer*>(raw_index));
             if (!index_) return false;
-            index_->nprobe = 32;
+            index_->nprobe = 4;
 
             std::ifstream in(labels_path, std::ios::binary | std::ios::ate);
             if (in) {
