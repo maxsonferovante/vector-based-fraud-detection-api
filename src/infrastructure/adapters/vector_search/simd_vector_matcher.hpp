@@ -19,6 +19,10 @@ namespace infrastructure {
 namespace adapters {
 namespace vector_search {
 
+/**
+ * SIMD-accelerated exhaustive search matcher.
+ * Performs linear scan with loop unrolling and architecture-specific intrinsics.
+ */
 class SimdVectorMatcher : public application::ports::out::VectorSearchPort {
     struct alignas(32) PaddedVector {
         int16_t elements[16]; 
@@ -26,7 +30,6 @@ class SimdVectorMatcher : public application::ports::out::VectorSearchPort {
 
     std::vector<PaddedVector> database_;
     std::vector<int8_t> labels_;
-    // Escala de 4096 é o limite seguro para evitar overflow em int32 com 14 dimensões
     static constexpr float SCALE = 4096.0f;
 
 public:
@@ -64,7 +67,6 @@ public:
 #if defined(__x86_64__) || defined(_M_X64)
         __m256i v_query = _mm256_load_si256((__m256i*)q);
         
-        // Loop principal unrolled 4x para maximizar throughput de execução
         size_t i = 0;
         for (; i + 3 < n; i += 4) {
             __m256i v_ref0 = _mm256_load_si256((__m256i*)&db_ptr[i]);
@@ -161,7 +163,7 @@ public:
             }
         }
 #endif
-        // Processamento de restos (se houver) para x86 unrolled
+
 #if defined(__x86_64__) || defined(_M_X64)
         for (; i < n; ++i) {
             __m256i v_ref = _mm256_load_si256((__m256i*)&db_ptr[i]);

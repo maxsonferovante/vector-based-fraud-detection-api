@@ -21,6 +21,11 @@ namespace infrastructure {
 namespace adapters {
 namespace vector_search {
 
+/**
+ * SIMD-accelerated Inverted File Index (IVF) matcher.
+ * Uses hardware-specific intrinsics for high-performance distance calculation
+ * and vector quantization for memory efficiency.
+ */
 class SimdIvfMatcher : public application::ports::out::VectorSearchPort {
 public:
     struct alignas(32) PaddedVector {
@@ -29,8 +34,8 @@ public:
     };
 
 private:
-    static constexpr size_t NUM_CLUSTERS = 2048; // Aumentado para 2k
-    static constexpr size_t PROBE_CLUSTERS = 16; // Aumentado para 16 probes para precisão Top-1
+    static constexpr size_t NUM_CLUSTERS = 2048;
+    static constexpr size_t PROBE_CLUSTERS = 16; 
     static constexpr float SCALE = 4096.0f;
 
     struct alignas(32) Centroid {
@@ -47,10 +52,14 @@ public:
         for(auto& b : buckets_) b.reserve(2000); 
     }
 
+    /**
+     * Builds the IVF index by clustering input data.
+     * Uses random sampling to select initial centroids.
+     */
     void train_and_build(const std::vector<std::pair<std::array<float, 14>, bool>>& data) {
         if (data.empty()) return;
         
-        logging::Logger::info("Building Elite-IVF index with " + std::to_string(NUM_CLUSTERS) + " clusters...");
+        logging::Logger::info("Building vector index...");
 
         std::mt19937 rng(42);
         std::vector<size_t> indices(data.size());
@@ -92,9 +101,14 @@ public:
             buckets_[best_cluster].push_back(pv);
             total_vectors_++;
         }
-        logging::Logger::info("IVF build complete. Total vectors: " + std::to_string(total_vectors_));
+        logging::Logger::info("Index build complete. Total vectors: " + std::to_string(total_vectors_));
     }
 
+    /**
+     * Performs a 2-phase search:
+     * 1. Finds the closest centroids.
+     * 2. Performs a SIMD-accelerated exhaustive search within the selected clusters.
+     */
     std::vector<application::ports::out::SearchResult> search(const domain::Vector14& query_vector, int k) override {
         if (total_vectors_ == 0) return {};
 
@@ -109,7 +123,7 @@ public:
         struct ClusterDist { int32_t dist; size_t id; };
         std::vector<ClusterDist> near_clusters(centroids_.size());
         
-        // Fase 1: Busca de Centroids Otimizada (também via SIMD se possível)
+        // Phase 1: Centroid distance calculation
         for (size_t c = 0; c < centroids_.size(); ++c) {
             int32_t d;
 #if defined(__x86_64__) || defined(_M_X64)
@@ -135,7 +149,7 @@ public:
         std::partial_sort(near_clusters.begin(), near_clusters.begin() + PROBE_CLUSTERS, near_clusters.end(), 
             [](const ClusterDist& a, const ClusterDist& b){ return a.dist < b.dist; });
 
-        // Fase 2: Busca SIMD nos Buckets selecionados
+        // Phase 2: Accelerated search within candidate buckets
         struct Candidate { int32_t dist; bool is_fraud; };
         Candidate top_k[5];
         int count = 0;

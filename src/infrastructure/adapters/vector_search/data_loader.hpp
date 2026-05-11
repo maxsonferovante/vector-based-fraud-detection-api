@@ -24,7 +24,7 @@ public:
     static void save_binary_index(std::shared_ptr<SimdIvfMatcher> matcher, const std::string& base_dir) {
         std::string path = base_dir + "/matcher.bin";
         matcher->save_binary(path);
-        logging::Logger::info("Saved binary IVF index to " + base_dir);
+        logging::Logger::info("Index saved to " + base_dir);
     }
 
     static void load_data(
@@ -36,9 +36,9 @@ public:
         std::string mcc_path = base_dir + "/mcc_risk.json";
         std::string ref_path = base_dir + "/references.json.gz";
 
-        logging::Logger::info("Loading resources in IVF mode from " + base_dir);
+        logging::Logger::info("Loading configuration resources...");
 
-        // 1. Normalização
+        // 1. Normalization Config
         std::ifstream norm_file(norm_path);
         if (norm_file.is_open()) {
             std::string content((std::istreambuf_iterator<char>(norm_file)), std::istreambuf_iterator<char>());
@@ -51,7 +51,7 @@ public:
             out_config.max_merchant_avg_amount = FastParser::find_double(content, "max_merchant_avg_amount");
         }
 
-        // 2. MCC
+        // 2. MCC Risk Mapping
         std::ifstream mcc_file(mcc_path);
         if (mcc_file.is_open()) {
             std::string content((std::istreambuf_iterator<char>(mcc_file)), std::istreambuf_iterator<char>());
@@ -70,19 +70,18 @@ public:
             }
         }
 
-        // 3. Referências
+        // 3. Vector Database
         std::string bin_path = base_dir + "/matcher.bin";
         if (fs::exists(bin_path)) {
-            logging::Logger::info("Loading pre-computed IVF binary from " + bin_path);
+            logging::Logger::info("Loading binary index from " + bin_path);
             if (matcher->load_binary(bin_path)) {
-                logging::Logger::info("Successfully loaded " + std::to_string(matcher->get_total_vectors()) + " reference vectors.");
                 return;
             }
         }
 
         gzFile file = gzopen(ref_path.c_str(), "rb");
         if (!file) {
-            logging::Logger::error("CRITICAL: Could not open " + ref_path);
+            logging::Logger::error("CRITICAL: Could not open dataset " + ref_path);
             return;
         }
 
@@ -91,7 +90,7 @@ public:
         char buffer[32768];
         int bytes_read;
         
-        logging::Logger::info("Parsing 3M vectors for IVF build...");
+        logging::Logger::info("Parsing reference dataset...");
         
         std::vector<std::pair<std::array<float, 14>, bool>> raw_data;
         raw_data.reserve(3000000);

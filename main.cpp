@@ -22,10 +22,10 @@ int main(int argc, char* argv[]) {
         const char* res_dir_env = std::getenv("RESOURCES_DIR");
         std::string res_dir = res_dir_env ? res_dir_env : "/app/resources";
 
-        // 1. Inicializar Motor de Busca (SIMD IVF)
+        // Initialize vector search engine
         auto matcher = std::make_shared<SimdIvfMatcher>();
 
-        // 2. Carregar dados e configurações
+        // Load configuration and reference data
         domain::services::NormalizationConfig config;
         DataLoader::load_data(res_dir, matcher, config);
 
@@ -35,23 +35,19 @@ int main(int argc, char* argv[]) {
             return 0;
         }
 
-        // FAIL-FAST
         if (matcher->get_total_vectors() == 0) {
             infrastructure::logging::Logger::error("CRITICAL: No data loaded. Aborting.");
             return 1;
         }
 
-        // 3. Inicializar Normalizador
+        // Initialize domain services
         auto normalizer = std::make_shared<domain::services::Normalizer>(config);
-
-        // 4. Inicializar Serviço de Fraude
         auto fraud_service = std::make_shared<application::services::FraudService>(normalizer, matcher);
 
-        // 5. Inicializar Adaptador Web
+        // Initialize web infrastructure
         auto web_adapter = std::make_shared<infrastructure::adapters::web::WebAdapter>(fraud_service);
 
-        // 6. Iniciar Servidor HTTP
-        // Com SIMD IVF, 1 thread é o ideal para 0.45 CPU
+        // Start HTTP server with a single processing thread
         int threads = 1;
         boost::asio::io_context ioc{threads};
         auto listener = std::make_shared<infrastructure::adapters::web::Listener>(
@@ -60,10 +56,9 @@ int main(int argc, char* argv[]) {
             web_adapter
         );
 
-        infrastructure::logging::Logger::info("Rinha API started on port " + std::to_string(port) + " with 1 thread");
+        infrastructure::logging::Logger::info("API service started on port " + std::to_string(port));
         
         listener->run();
-
         ioc.run();
     } catch (const std::exception& e) {
         infrastructure::logging::Logger::error(std::string("Critical error: ") + e.what());
