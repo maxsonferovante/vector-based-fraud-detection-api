@@ -1,0 +1,7 @@
+{
+    "participants": ["Maxson Ferovante"],
+    "social": ["https://github.com/maxsonferovante"],
+    "source-code-repo": "https://github.com/maxsonferovante/vector-based-fraud-detection-api",
+    "stack": ["c++", "boost", "faiss", "haproxy"],
+    "open_to_work": true
+}

@@ -19,7 +19,7 @@ services:
       - rinha-network
 
   api1:
-    build: .
+    image: maxsonferovante/vector-based-fraud-detection-api:latest
     container_name: api1
     environment:
       - RESOURCES_DIR=resources
@@ -32,7 +32,7 @@ services:
       - rinha-network
 
   api2:
-    build: .
+    image: maxsonferovante/vector-based-fraud-detection-api:latest
     container_name: api2
     environment:
       - RESOURCES_DIR=resources
