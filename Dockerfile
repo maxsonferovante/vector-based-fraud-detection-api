@@ -42,6 +42,10 @@ RUN mkdir -p build && cd build && \
     cmake -DCMAKE_BUILD_TYPE=Release .. && \
     make -j$(nproc)
 
+# Gera os arquivos binários do FAISS durante o build (evita overhead no startup)
+ENV RESOURCES_DIR=/app/resources
+RUN ./build/vector_based_fraud_detection_api --prepare
+
 # ==========================================
 # STAGE 2: Runtime
 # ==========================================
@@ -58,10 +62,10 @@ RUN apt-get update && apt-get install -y \
 
 WORKDIR /app
 
-# Copia o binário e os recursos do builder
+# Copia o binário e os recursos do builder (agora contendo o faiss_index.bin)
 COPY --from=builder /app/build/vector_based_fraud_detection_api .
 COPY --from=builder /usr/local/lib/libfaiss.so* /usr/local/lib/
-COPY resources/ /app/resources/
+COPY --from=builder /app/resources/ /app/resources/
 
 # Atualiza cache de bibliotecas
 RUN ldconfig

@@ -11,8 +11,10 @@
 
 using namespace infrastructure::adapters::vector_search;
 
-int main() {
+int main(int argc, char* argv[]) {
     try {
+        bool prepare_mode = (argc > 1 && std::string(argv[1]) == "--prepare");
+
         unsigned short port = 9999;
         auto const address = boost::asio::ip::make_address("0.0.0.0");
 
@@ -26,6 +28,12 @@ int main() {
         // 2. Carregar dados e configurações (agora injeta o FAISS diretamente e faz streaming)
         domain::services::NormalizationConfig config;
         DataLoader::load_data(res_dir, faiss_adapter, config);
+
+        if (prepare_mode) {
+            DataLoader::save_binary_index(faiss_adapter, res_dir);
+            infrastructure::logging::Logger::info("Preparation complete.");
+            return 0;
+        }
 
         // FAIL-FAST: Se não carregou dados, a API não deve subir
         if (faiss_adapter->get_total_vectors() == 0) {

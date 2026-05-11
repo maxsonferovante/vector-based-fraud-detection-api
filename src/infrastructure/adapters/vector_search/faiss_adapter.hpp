@@ -6,8 +6,10 @@
 #include <faiss/IndexScalarQuantizer.h>
 #include <faiss/IndexIVF.h>
 #include <faiss/IndexFlat.h>
+#include <faiss/index_io.h>
 #include <memory>
 #include <vector>
+#include <fstream>
 #include <omp.h>
 #include <algorithm>
 
@@ -63,6 +65,35 @@ public:
 
     size_t get_total_vectors() const {
         return index_ ? index_->ntotal : 0;
+    }
+
+    void save(const std::string& index_path, const std::string& labels_path) {
+        if (index_) faiss::write_index(index_.get(), index_path.c_str());
+        std::ofstream out(labels_path, std::ios::binary);
+        if (out) out.write(labels_.data(), labels_.size());
+    }
+
+    bool load(const std::string& index_path, const std::string& labels_path) {
+        try {
+            faiss::Index* raw_index = faiss::read_index(index_path.c_str());
+            if (!raw_index) return false;
+            index_.reset(dynamic_cast<faiss::IndexIVFScalarQuantizer*>(raw_index));
+            if (!index_) return false;
+            index_->nprobe = 32;
+
+            std::ifstream in(labels_path, std::ios::binary | std::ios::ate);
+            if (in) {
+                std::streamsize size = in.tellg();
+                in.seekg(0, std::ios::beg);
+                labels_.resize(size);
+                in.read(labels_.data(), size);
+            } else {
+                return false;
+            }
+            return true;
+        } catch (...) {
+            return false;
+        }
     }
 
     std::vector<application::ports::out::SearchResult> search(const domain::Vector14& query_vector, int k) override {

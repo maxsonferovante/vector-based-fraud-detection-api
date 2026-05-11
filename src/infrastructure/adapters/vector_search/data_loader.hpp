@@ -21,6 +21,13 @@ using FastParser = infrastructure::parser::FastJsonScanner;
 
 class DataLoader {
 public:
+    static void save_binary_index(std::shared_ptr<FaissAdapter> faiss_adapter, const std::string& base_dir) {
+        std::string index_path = base_dir + "/faiss_index.bin";
+        std::string labels_path = base_dir + "/labels.bin";
+        faiss_adapter->save(index_path, labels_path);
+        logging::Logger::info("Saved binary FAISS index to " + base_dir);
+    }
+
     // Optimization 1: STREAMING and BATCHING to save RAM
     static void load_data(
         const std::string& base_dir,
@@ -66,6 +73,18 @@ public:
         }
 
         // 3. Referências (O GRANDE DESAFIO: 3M registros / ~300MB)
+        std::string index_path = base_dir + "/faiss_index.bin";
+        std::string labels_path = base_dir + "/labels.bin";
+
+        if (fs::exists(index_path) && fs::exists(labels_path)) {
+            logging::Logger::info("Loading pre-computed FAISS index from " + base_dir);
+            if (faiss_adapter->load(index_path, labels_path)) {
+                logging::Logger::info("Successfully loaded " + std::to_string(faiss_adapter->get_total_vectors()) + " reference vectors from binary.");
+                return;
+            }
+            logging::Logger::error("Failed to load binary index, falling back to JSON stream.");
+        }
+
         gzFile file = gzopen(ref_path.c_str(), "rb");
         if (!file) {
             logging::Logger::error("CRITICAL: Could not open " + ref_path);
