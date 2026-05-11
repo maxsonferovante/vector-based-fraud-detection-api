@@ -2,6 +2,7 @@
 services:
   lb:
     image: haproxy:2.9-alpine
+    platform: linux/amd64
     container_name: lb
     ports:
       - "9999:9999"
@@ -19,7 +20,8 @@ services:
       - rinha-network
 
   api1:
-    image: maxsonferovante/vector-based-fraud-detection-api:latest
+    image: maxsonferovante/vector-based-fraud-detection-api:10-05-2026-23-38-59
+    platform: linux/amd64
     container_name: api1
     environment:
       - RESOURCES_DIR=resources
@@ -32,7 +34,8 @@ services:
       - rinha-network
 
   api2:
-    image: maxsonferovante/vector-based-fraud-detection-api:latest
+    image: maxsonferovante/vector-based-fraud-detection-api:10-05-2026-23-38-59
+    platform: linux/amd64
     container_name: api2
     environment:
       - RESOURCES_DIR=resources
