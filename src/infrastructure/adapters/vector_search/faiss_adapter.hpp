@@ -24,18 +24,20 @@ class FaissAdapter : public application::ports::out::VectorSearchPort {
 
 public:
     FaissAdapter() {
-        omp_set_num_threads(1);
+        // Use all available cores for search
+        omp_set_num_threads(std::max(1, (int)std::thread::hardware_concurrency()));
         
         quantizer_ = std::make_unique<faiss::IndexFlatL2>(14);
         
-        // Extreme Performance Mode: SQ8 (42MB) and nprobe=4
+        // Balanced Performance: IVF4096 + SQ8
+        // Fast enough for Rinha, accurate enough for fraud, memory efficient.
         index_ = std::make_unique<faiss::IndexIVFScalarQuantizer>(
-            quantizer_.get(), 14, 1024, 
-            faiss::ScalarQuantizer::QT_8bit, 
+            quantizer_.get(), 14, 4096, 
+            faiss::ScalarQuantizer::QuantizerType::QT_8bit,
             faiss::METRIC_L2
         );
         
-        index_->nprobe = 4;
+        index_->nprobe = 32; // Higher nprobe for better recall
     }
 
     void train(const std::vector<float>& vectors) {
@@ -78,7 +80,7 @@ public:
             if (!raw_index) return false;
             index_.reset(dynamic_cast<faiss::IndexIVFScalarQuantizer*>(raw_index));
             if (!index_) return false;
-            index_->nprobe = 4;
+            index_->nprobe = 32;
 
             std::ifstream in(labels_path, std::ios::binary | std::ios::ate);
             if (in) {
@@ -102,7 +104,6 @@ public:
         std::vector<faiss::idx_t> indices(k);
 
         try {
-            // Busca ultra-rápida via clusters
             index_->search(1, query_vector.data(), k, distances.data(), indices.data());
         } catch (...) {
             return {};

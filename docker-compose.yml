@@ -14,7 +14,7 @@ services:
       resources:
         limits:
           cpus: '0.10'
-          memory: 15M
+          memory: 20M
     networks:
       - rinha-network
 
