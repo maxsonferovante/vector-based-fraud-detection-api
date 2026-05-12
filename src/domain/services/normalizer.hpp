@@ -97,8 +97,8 @@ public:
         v[10] = tx.terminal.card_present ? 1.0f : 0.0f;
 
         bool known = false;
-        for (const auto& m_id : tx.customer.known_merchants) {
-            if (m_id == tx.merchant.id) {
+        for (int i = 0; i < tx.customer.known_merchants_count; ++i) {
+            if (tx.customer.known_merchants[i] == tx.merchant.id) {
                 known = true;
                 break;
             }

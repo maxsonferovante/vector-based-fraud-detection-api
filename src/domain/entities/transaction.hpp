@@ -8,17 +8,18 @@
 
 namespace domain {
 
-// Optimization 3: Use std::string_view to avoid heap allocations
 struct TransactionData {
     double amount;
     int installments;
     std::string_view requested_at;
 };
 
+// known_merchants_count: número de elementos válidos no array (máx. 16).
 struct Customer {
     double avg_amount;
     int tx_count_24h;
-    std::vector<std::string_view> known_merchants;
+    std::array<std::string_view, 16> known_merchants{};
+    int known_merchants_count = 0;
 };
 
 struct Merchant {
