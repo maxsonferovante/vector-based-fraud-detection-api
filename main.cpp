@@ -3,6 +3,7 @@
 #include <vector>
 #include <thread>
 #include <cstdlib>
+#include <algorithm>
 #include "src/application/services/fraud_service.hpp"
 #include "src/infrastructure/adapters/web/web_adapter.hpp"
 #include "src/infrastructure/adapters/web/http_server.hpp"
@@ -22,10 +23,8 @@ int main(int argc, char* argv[]) {
         const char* res_dir_env = std::getenv("RESOURCES_DIR");
         std::string res_dir = res_dir_env ? res_dir_env : "/app/resources";
 
-        // Initialize vector search engine
         auto matcher = std::make_shared<SimdIvfMatcher>();
 
-        // Load configuration and reference data
         domain::services::NormalizationConfig config;
         DataLoader::load_data(res_dir, matcher, config);
 
@@ -40,26 +39,32 @@ int main(int argc, char* argv[]) {
             return 1;
         }
 
-        // Initialize domain services
-        auto normalizer = std::make_shared<domain::services::Normalizer>(config);
+        auto normalizer    = std::make_shared<domain::services::Normalizer>(config);
         auto fraud_service = std::make_shared<application::services::FraudService>(normalizer, matcher);
+        auto web_adapter   = std::make_shared<infrastructure::adapters::web::WebAdapter>(fraud_service);
 
-        // Initialize web infrastructure
-        auto web_adapter = std::make_shared<infrastructure::adapters::web::WebAdapter>(fraud_service);
+        // SimdIvfMatcher é read-only após load — sem mutex para search() concorrente.
+        // 2 threads: uma em I/O wait + uma em SIMD search; ideal para 0.47 vCPU.
+        const int num_threads = std::clamp(
+            static_cast<int>(std::thread::hardware_concurrency()), 1, 2);
 
-        // Start HTTP server with a single processing thread
-        int threads = 1;
-        boost::asio::io_context ioc{threads};
+        infrastructure::logging::Logger::info(
+            "Starting on port " + std::to_string(port) +
+            " threads=" + std::to_string(num_threads));
+
+        boost::asio::io_context ioc{num_threads};
         auto listener = std::make_shared<infrastructure::adapters::web::Listener>(
-            ioc, 
-            tcp::endpoint{address, port}, 
-            web_adapter
-        );
-
-        infrastructure::logging::Logger::info("API service started on port " + std::to_string(port));
-        
+            ioc, tcp::endpoint{address, port}, web_adapter);
         listener->run();
+
+        std::vector<std::thread> pool;
+        pool.reserve(static_cast<size_t>(num_threads - 1));
+        for (int i = 0; i < num_threads - 1; ++i)
+            pool.emplace_back([&ioc]{ ioc.run(); });
         ioc.run();
+
+        for (auto& t : pool) t.join();
+
     } catch (const std::exception& e) {
         infrastructure::logging::Logger::error(std::string("Critical error: ") + e.what());
         return 1;
