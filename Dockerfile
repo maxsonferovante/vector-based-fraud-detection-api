@@ -1,11 +1,9 @@
-# ==========================================
-# STAGE 1: Build
-# ==========================================
-FROM ubuntu:24.04 AS builder
+# Stage 1: Build
+# --platform linux/amd64: garante compilação para x86-64 independente do host (Mac ARM64).
+FROM --platform=linux/amd64 ubuntu:24.04 AS builder
 
 ENV DEBIAN_FRONTEND=noninteractive
 
-# Instala ferramentas de build e dependências básicas
 RUN apt-get update && apt-get install -y \
     build-essential \
     cmake \
@@ -17,25 +15,24 @@ RUN apt-get update && apt-get install -y \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
-
-# Copia o código fonte (respeitando .dockerignore)
 COPY . .
 
-# Compila a aplicação
+# LTO desabilitado: GCC 13 lança ICE (internal compiler error) ao linkar com LTO
+# sob emulação QEMU x86-64 (Mac ARM64 host). -march=x86-64-v3 garante AVX2+BMI2.
 RUN mkdir -p build && cd build && \
-    cmake -DCMAKE_BUILD_TYPE=Release .. && \
+    cmake \
+        -DCMAKE_BUILD_TYPE=Release \
+        -DCMAKE_INTERPROCEDURAL_OPTIMIZATION=OFF \
+        -DCMAKE_CXX_FLAGS="-O3 -march=x86-64-v3 -fno-rtti -funroll-loops" \
+        .. && \
     make -j$(nproc)
 
-# Gera o binário SIMD otimizado durante o build
 ENV RESOURCES_DIR=/app/resources
 RUN ./build/vector_based_fraud_detection_api --prepare
 
-# ==========================================
-# STAGE 2: Runtime
-# ==========================================
-FROM ubuntu:24.04
+# Stage 2: Runtime
+FROM --platform=linux/amd64 ubuntu:24.04
 
-# Instala apenas as bibliotecas de runtime necessárias
 RUN apt-get update && apt-get install -y \
     libboost-system1.83.0 \
     libgomp1 \
@@ -44,7 +41,6 @@ RUN apt-get update && apt-get install -y \
 
 WORKDIR /app
 
-# Copia o binário e os recursos do builder (contendo matcher.bin)
 COPY --from=builder /app/build/vector_based_fraud_detection_api .
 COPY --from=builder /app/resources/ /app/resources/
 
