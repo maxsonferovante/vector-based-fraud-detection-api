@@ -35,7 +35,7 @@ public:
 
 private:
     static constexpr size_t NUM_CLUSTERS = 2048;
-    static constexpr size_t PROBE_CLUSTERS = 8; 
+    static constexpr size_t PROBE_CLUSTERS = 16; 
     static constexpr float SCALE = 4096.0f;
 
     struct alignas(32) Centroid {
