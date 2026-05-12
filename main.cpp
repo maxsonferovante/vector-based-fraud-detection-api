@@ -1,7 +1,4 @@
 #include <memory>
-#include <iostream>
-#include <vector>
-#include <thread>
 #include <cstdlib>
 #include "src/application/services/fraud_service.hpp"
 #include "src/infrastructure/adapters/web/web_adapter.hpp"
@@ -47,8 +44,8 @@ int main(int argc, char* argv[]) {
         // Initialize web infrastructure
         auto web_adapter = std::make_shared<infrastructure::adapters::web::WebAdapter>(fraud_service);
 
-        // Start HTTP server with a single processing thread
-        int threads = 1;
+        // Start HTTP server with 2 processing threads
+        int threads = 2;
         boost::asio::io_context ioc{threads};
         auto listener = std::make_shared<infrastructure::adapters::web::Listener>(
             ioc, 
@@ -58,8 +55,15 @@ int main(int argc, char* argv[]) {
 
         infrastructure::logging::Logger::info("API service started on port " + std::to_string(port));
         
+        std::vector<std::thread> v;
+        v.reserve(threads - 1);
+        for(auto i = threads - 1; i > 0; --i)
+            v.emplace_back([&ioc]{ ioc.run(); });
+
         listener->run();
         ioc.run();
+        
+        for(auto& t : v) t.join();
     } catch (const std::exception& e) {
         infrastructure::logging::Logger::error(std::string("Critical error: ") + e.what());
         return 1;
