@@ -4,7 +4,7 @@ project(vector_based_fraud_detection_api)
 set(CMAKE_CXX_STANDARD 26)
 
 # -march=native: local dev; Dockerfile sobrescreve com -march=x86-64-v3 para portabilidade
-set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -O3 -march=native -fno-rtti -funroll-loops")
+set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -O3 -march=native -funroll-loops")
 
 # ──────────────────────────────────────────────
 # PGO (Profile-Guided Optimization)
@@ -49,7 +49,6 @@ endif()
 # Hot path flags: sem exceções/RTTI, sem stack protector
 # ──────────────────────────────────────────────
 add_compile_options(
-    -fno-exceptions
     -fno-stack-protector
     -fno-asynchronous-unwind-tables
     -ffast-math

@@ -81,7 +81,8 @@ public:
         {
             auto tx_res = doc.find_field_unordered("transaction");
             if (tx_res.error() != simdjson::SUCCESS) return false;
-            simdjson::ondemand::object tx_obj = tx_res.value_unsafe();
+            simdjson::ondemand::object tx_obj;
+            if (tx_res.get_object().get(tx_obj) != simdjson::SUCCESS) return false;
 
             double amount = 0.0;
             if (tx_obj["amount"].get(amount) != simdjson::SUCCESS) return false;
@@ -100,7 +101,8 @@ public:
         {
             auto cust_res = doc.find_field_unordered("customer");
             if (cust_res.error() != simdjson::SUCCESS) return false;
-            simdjson::ondemand::object cust = cust_res.value_unsafe();
+            simdjson::ondemand::object cust;
+            if (cust_res.get_object().get(cust) != simdjson::SUCCESS) return false;
 
             double avg = 0.0;
             if (cust["avg_amount"].get(avg) != simdjson::SUCCESS) return false;
@@ -113,8 +115,9 @@ public:
             tx.customer.known_merchants_count = 0;
             auto km_field = cust["known_merchants"];
             if (km_field.error() == simdjson::SUCCESS) {
-                simdjson::ondemand::array arr = km_field.value_unsafe();
-                for (auto elem : arr) {
+                simdjson::ondemand::array arr;
+                if (km_field.get_array().get(arr) == simdjson::SUCCESS) {
+                    for (auto elem : arr) {
                     std::string_view sv;
                     if (elem.get_string().get(sv) != simdjson::SUCCESS) continue;
                     if (tx.customer.known_merchants_count < static_cast<int>(tx.customer.known_merchants.size())) {
@@ -123,12 +126,14 @@ public:
                 }
             }
         }
+        } // fecha o bloco customer
 
         // -- merchant --
         {
             auto m_res = doc.find_field_unordered("merchant");
             if (m_res.error() != simdjson::SUCCESS) return false;
-            simdjson::ondemand::object m = m_res.value_unsafe();
+            simdjson::ondemand::object m;
+            if (m_res.get_object().get(m) != simdjson::SUCCESS) return false;
 
             std::string_view mid;
             if (m["id"].get_string().get(mid) == simdjson::SUCCESS) {
@@ -149,7 +154,8 @@ public:
         {
             auto t_res = doc.find_field_unordered("terminal");
             if (t_res.error() != simdjson::SUCCESS) return false;
-            simdjson::ondemand::object t = t_res.value_unsafe();
+            simdjson::ondemand::object t;
+            if (t_res.get_object().get(t) != simdjson::SUCCESS) return false;
 
             bool b = false;
             if (t["is_online"].get(b) != simdjson::SUCCESS) return false;

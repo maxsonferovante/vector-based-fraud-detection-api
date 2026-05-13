@@ -64,25 +64,20 @@ public:
 
 private:
     http::response<http::string_body> process_fraud_score(http::request<http::string_body> const& req) {
-        try {
-            domain::Transaction tx{};
-            
-            // simdjson ondemand parser — SIMD-acelerado, thread-local
-            if (!SimdjsonParser::parse(req.body(), tx)) {
-                return make_response(http::status::bad_request, req.version(), req.keep_alive(), RESP_BAD_REQUEST);
-            }
-
-            auto result = use_case_->execute(tx, tx.customer);
-
-            // Mapeia fraud_score para índice [0,5]: fraud_count/5 * 5 = fraud_count
-            int idx = static_cast<int>(std::round(result.fraud_score * 5.0));
-            idx = std::clamp(idx, 0, 5);
-
-            return make_response(http::status::ok, req.version(), req.keep_alive(), RESP_FRAUD[idx]);
-
-        } catch (...) {
+        domain::Transaction tx{};
+        
+        // simdjson ondemand parser — SIMD-acelerado, thread-local
+        if (!SimdjsonParser::parse(req.body(), tx)) {
             return make_response(http::status::bad_request, req.version(), req.keep_alive(), RESP_BAD_REQUEST);
         }
+
+        auto result = use_case_->execute(tx, tx.customer);
+
+        // Mapeia fraud_score para índice [0,5]: fraud_count/5 * 5 = fraud_count
+        int idx = static_cast<int>(std::round(result.fraud_score * 5.0));
+        idx = std::clamp(idx, 0, 5);
+
+        return make_response(http::status::ok, req.version(), req.keep_alive(), RESP_FRAUD[idx]);
     }
 
     http::response<http::string_body> make_response(http::status status, unsigned version, 
