@@ -10,6 +10,7 @@
 #include <random>
 #include <numeric>
 #include <cstdint>
+#include <cstdio>
 
 #if defined(__x86_64__) || defined(_M_X64)
     #include <immintrin.h>
@@ -26,7 +27,9 @@ namespace vector_search {
 // search() é read-only e thread-safe após a construção.
 class SimdIvfMatcher : public application::ports::out::VectorSearchPort {
 public:
-    struct alignas(32) PaddedVector {
+    // alignas removido: sizeof = 34 bytes → 3M × 34 = ~97 MB (seguro dentro de 168 MB).
+    // alignas(32) causava sizeof = 64 bytes → 3M × 64 = 183 MB → OOM no Linux cgroup.
+    struct PaddedVector {
         int16_t elements[16];
         bool is_fraud;
     };
@@ -45,7 +48,7 @@ private:
     std::vector<std::vector<PaddedVector>>  buckets_;
     size_t total_vectors_ = 0;
 
-    // Distância euclidiana quadrada em int16 com padding de 16 elementos (14 + 2 zeros).
+    // simd_dist: distância euclidiana quadrada para ponteiros 32-byte aligned (Centroid).
     // Ponteiros devem estar alinhados a 32 bytes (__restrict__ evita alias check).
     static inline int32_t simd_dist(const int16_t* __restrict__ a,
                                     const int16_t* __restrict__ b) noexcept {
@@ -79,6 +82,26 @@ private:
             dist += d * d;
         }
         return dist;
+#endif
+    }
+
+    // simd_dist_pv: variante com loadu para PaddedVector (sem alignas → sem garantia de alinhamento).
+    // loadu vs load: sem penalidade em AVX2 quando o dado não cruza boundary de cache line.
+    static inline int32_t simd_dist_pv(const int16_t* __restrict__ a,
+                                       const int16_t* __restrict__ b) noexcept {
+#if defined(__x86_64__) || defined(_M_X64)
+        __m256i va  = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(a));
+        __m256i vb  = _mm256_load_si256(reinterpret_cast<const __m256i*>(b));
+        __m256i d   = _mm256_sub_epi16(va, vb);
+        __m256i sq  = _mm256_madd_epi16(d, d);
+        __m128i lo  = _mm256_castsi256_si128(sq);
+        __m128i hi  = _mm256_extracti128_si256(sq, 1);
+        __m128i s   = _mm_add_epi32(lo, hi);
+        s = _mm_add_epi32(s, _mm_shuffle_epi32(s, _MM_SHUFFLE(1,0,3,2)));
+        s = _mm_add_epi32(s, _mm_shuffle_epi32(s, _MM_SHUFFLE(2,3,0,1)));
+        return _mm_cvtsi128_si32(s);
+#else
+        return simd_dist(a, b); // scalar e NEON: loadu e load são equivalentes
 #endif
     }
 
@@ -199,7 +222,7 @@ public:
 
         for (size_t p = 0; p < PROBE_CLUSTERS && p < nc; ++p) {
             for (const auto& pv : buckets_[near_clusters[p].id]) {
-                int32_t distance = simd_dist(q, pv.elements);
+                int32_t distance = simd_dist_pv(q, pv.elements); // loadu: PaddedVector sem alignas
                 if (distance >= threshold) continue;
 
                 if (count < k) {
@@ -226,6 +249,30 @@ public:
     }
 
     size_t get_total_vectors() const { return total_vectors_; }
+
+    void log_memory_stats() const {
+        auto fmt_mb = [](size_t bytes) -> std::string {
+            char buf[32];
+            std::snprintf(buf, sizeof(buf), "%.2f MB", bytes / (1024.0 * 1024.0));
+            return std::string(buf);
+        };
+
+        const size_t centroids_bytes = centroids_.size() * sizeof(Centroid);
+        const size_t buckets_meta    = buckets_.size()   * sizeof(std::vector<PaddedVector>);
+        const size_t buckets_data    = total_vectors_    * sizeof(PaddedVector);
+        const size_t total_index     = centroids_bytes + buckets_meta + buckets_data;
+
+        logging::Logger::info("[mem] sizeof(Centroid)=" + std::to_string(sizeof(Centroid)) +
+                              "B  sizeof(PaddedVector)=" + std::to_string(sizeof(PaddedVector)) + "B");
+        logging::Logger::info("[mem] clusters=" + std::to_string(centroids_.size()) +
+                              "  vectors=" + std::to_string(total_vectors_));
+        logging::Logger::info("[mem] centroids       =" + fmt_mb(centroids_bytes));
+        logging::Logger::info("[mem] buckets_metadata=" + fmt_mb(buckets_meta) +
+                              "  (" + std::to_string(buckets_.size()) + " x " +
+                              std::to_string(sizeof(std::vector<PaddedVector>)) + "B header)");
+        logging::Logger::info("[mem] buckets_data    =" + fmt_mb(buckets_data));
+        logging::Logger::info("[mem] total_index     =" + fmt_mb(total_index));
+    }
 
     void save_binary(const std::string& path) {
         std::ofstream out(path, std::ios::binary);

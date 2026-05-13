@@ -27,6 +27,7 @@ int main(int argc, char* argv[]) {
 
         domain::services::NormalizationConfig config;
         DataLoader::load_data(res_dir, matcher, config);
+        matcher->log_memory_stats();
 
         if (prepare_mode) {
             DataLoader::save_binary_index(matcher, res_dir);
