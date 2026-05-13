@@ -63,9 +63,8 @@ public:
                 std::string key(content.substr(s + 1, e - s - 1));
                 size_t val_start = content.find_first_of("0123456789.", content.find(":", e));
                 size_t val_end = content.find_first_not_of("0123456789.", val_start);
-                try {
-                    out_config.mcc_risk[key] = std::stod(std::string(content.substr(val_start, val_end - val_start)));
-                } catch(...) {}
+                std::string val_str(content.substr(val_start, val_end - val_start));
+                out_config.mcc_risk[key] = std::strtod(val_str.c_str(), nullptr);
                 current = (val_end == std::string::npos) ? content.size() : val_end;
             }
         }
