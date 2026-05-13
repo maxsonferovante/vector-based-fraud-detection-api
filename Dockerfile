@@ -1,74 +1,48 @@
-# ==========================================
-# STAGE 1: Build
-# ==========================================
-FROM ubuntu:24.04 AS builder
+# Stage 1: Build
+# --platform linux/amd64: garante compilação para x86-64 independente do host (Mac ARM64).
+FROM --platform=linux/amd64 ubuntu:24.04 AS builder
 
 ENV DEBIAN_FRONTEND=noninteractive
 
-# Instala ferramentas de build e dependências básicas
 RUN apt-get update && apt-get install -y \
     build-essential \
     cmake \
     git \
     pkg-config \
     libboost-system-dev \
-    libopenblas-dev \
-    liblapack-dev \
     libgomp1 \
     zlib1g-dev \
     && rm -rf /var/lib/apt/lists/*
 
-WORKDIR /deps
-
-# 1. Build FAISS from source (v1.8.0 stable)
-RUN git clone --depth 1 --branch v1.8.0 https://github.com/facebookresearch/faiss.git && \
-    cd faiss && \
-    cmake -B build \
-          -DFAISS_ENABLE_GPU=OFF \
-          -DFAISS_ENABLE_PYTHON=OFF \
-          -DBUILD_TESTING=OFF \
-          -DBUILD_SHARED_LIBS=ON \
-          -DCMAKE_BUILD_TYPE=Release . && \
-    cmake --build build -j$(nproc) && \
-    cmake --install build
-
 WORKDIR /app
-
-# Copia o código fonte (respeitando .dockerignore)
 COPY . .
 
-# Compila a aplicação
+# LTO desabilitado: GCC 13 lança ICE (internal compiler error) ao linkar com LTO
+# sob emulação QEMU x86-64 (Mac ARM64 host). -march=x86-64-v3 garante AVX2+BMI2.
 RUN mkdir -p build && cd build && \
-    cmake -DCMAKE_BUILD_TYPE=Release .. && \
+    cmake \
+        -DCMAKE_BUILD_TYPE=Release \
+        -DCMAKE_INTERPROCEDURAL_OPTIMIZATION=OFF \
+        -DCMAKE_CXX_FLAGS="-O3 -march=x86-64-v3 -fno-rtti -funroll-loops" \
+        .. && \
     make -j$(nproc)
 
-# Gera os arquivos binários do FAISS durante o build (evita overhead no startup)
 ENV RESOURCES_DIR=/app/resources
 RUN ./build/vector_based_fraud_detection_api --prepare
 
-# ==========================================
-# STAGE 2: Runtime
-# ==========================================
-FROM ubuntu:24.04
+# Stage 2: Runtime
+FROM --platform=linux/amd64 ubuntu:24.04
 
-# Instala apenas as bibliotecas de runtime necessárias
 RUN apt-get update && apt-get install -y \
     libboost-system1.83.0 \
-    libopenblas0 \
-    liblapack3 \
     libgomp1 \
     zlib1g \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 
-# Copia o binário e os recursos do builder (agora contendo o faiss_index.bin)
 COPY --from=builder /app/build/vector_based_fraud_detection_api .
-COPY --from=builder /usr/local/lib/libfaiss.so* /usr/local/lib/
 COPY --from=builder /app/resources/ /app/resources/
-
-# Atualiza cache de bibliotecas
-RUN ldconfig
 
 EXPOSE 9999
 

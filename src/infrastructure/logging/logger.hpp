@@ -3,9 +3,9 @@
 
 #include <string>
 #include <iostream>
-#include <iomanip>
 #include <chrono>
-#include <sstream>
+#include <ctime>
+#include <array>
 
 namespace infrastructure {
 namespace logging {
@@ -14,18 +14,21 @@ class Logger {
 public:
     static std::string get_timestamp() {
         auto now = std::chrono::system_clock::now();
-        auto in_time_t = std::chrono::system_clock::to_time_t(now);
-        std::stringstream ss;
-        ss << std::put_time(std::localtime(&in_time_t), "%Y-%m-%d %H:%M:%S");
-        return ss.str();
+        std::time_t t = std::chrono::system_clock::to_time_t(now);
+        std::array<char, 20> buf;
+        struct tm tm_buf{};
+        localtime_r(&t, &tm_buf); // POSIX thread-safe; std::localtime usa buffer estático global
+        std::strftime(buf.data(), buf.size(), "%Y-%m-%d %H:%M:%S", &tm_buf);
+        return std::string(buf.data());
     }
 
     static void info(const std::string& message) {
-        std::cout << "[" << get_timestamp() << "] [INFO] " << message << std::endl;
+        std::cout << '[' << get_timestamp() << "] [INFO] " << message << '\n';
     }
 
     static void error(const std::string& message) {
-        std::cerr << "[" << get_timestamp() << "] [ERROR] " << message << std::endl;
+        std::cerr << '[' << get_timestamp() << "] [ERROR] " << message << '\n';
+        std::cerr.flush();
     }
 };
 

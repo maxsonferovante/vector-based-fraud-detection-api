@@ -65,7 +65,7 @@ public:
         auto [ptr, ec] = std::from_chars(val_str.data(), val_str.data() + val_str.size(), result);
         if (ec == std::errc()) return result;
 #endif
-        // Fallback rápido sem std::string para números normais
+        // Fallback via strtod para compiladores sem from_chars<double>
         char buf[32];
         size_t len = std::min(val_str.size(), sizeof(buf) - 1);
         std::copy(val_str.begin(), val_str.begin() + len, buf);
@@ -74,20 +74,34 @@ public:
     }
 
     static int find_int(std::string_view json, std::string_view search_key) {
-        return static_cast<int>(find_double(json, search_key));
+        size_t key_pos = json.find(search_key);
+        if (key_pos == std::string_view::npos) return 0;
+
+        size_t colon_pos = json.find(":", key_pos + search_key.size());
+        if (colon_pos == std::string_view::npos) return 0;
+
+        size_t start = json.find_first_of("0123456789-", colon_pos + 1);
+        if (start == std::string_view::npos) return 0;
+
+        int result = 0;
+        std::from_chars(json.data() + start, json.data() + json.size(), result);
+        return result;
     }
 
     static bool find_bool(std::string_view json, std::string_view search_key) {
         size_t key_pos = json.find(search_key);
         if (key_pos == std::string_view::npos) return false;
-        
+
         size_t colon_pos = json.find(":", key_pos + search_key.size());
         if (colon_pos == std::string_view::npos) return false;
-        
+
         size_t val_start = json.find_first_not_of(" \t\n\r", colon_pos + 1);
         if (val_start == std::string_view::npos || val_start + 4 > json.size()) return false;
-        
-        return json.substr(val_start, 4) == "true";
+
+        return (json[val_start]     == 't' &&
+                json[val_start + 1] == 'r' &&
+                json[val_start + 2] == 'u' &&
+                json[val_start + 3] == 'e');
     }
 
     static std::string_view find_object(std::string_view json, std::string_view search_key) {
@@ -124,7 +138,7 @@ public:
         if (start == std::string_view::npos) return v;
         
         size_t current = start + 1;
-        char buf[64]; // buffer local para evitar alocações
+        char buf[64];
         
         while (v.size() < 14) {
             size_t num_start = object.find_first_of("0123456789.-", current);

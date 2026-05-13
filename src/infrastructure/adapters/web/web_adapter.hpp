@@ -8,7 +8,6 @@
 #include <string_view>
 #include <array>
 #include <cmath>
-#include <sstream>
 #include "../../../application/ports/in/analyze_fraud_use_case.hpp"
 #include "../../logging/logger.hpp"
 #include "../../parser/json_parser.hpp"
@@ -73,19 +72,21 @@ private:
             tx.customer.avg_amount = FastParser::find_double(j_cust, FastParser::K_AVG);
             tx.customer.tx_count_24h = FastParser::find_int(j_cust, FastParser::K_COUNT);
             
-            //conhecidos merchants (extração básica simplificada)
-            size_t m_start = j_cust.find("[");
-            size_t m_end = j_cust.find("]");
-            if (m_start != std::string_view::npos && m_end != std::string_view::npos && m_end > m_start) {
-                std::string_view list = j_cust.substr(m_start + 1, m_end - m_start - 1);
-                size_t current = 0;
-                while (current < list.size()) {
-                    size_t s = list.find("\"", current);
-                    if (s == std::string_view::npos) break;
-                    size_t e = list.find("\"", s + 1);
-                    if (e == std::string_view::npos) break;
-                    tx.customer.known_merchants.push_back(list.substr(s + 1, e - s - 1));
-                    current = e + 1;
+            {
+                size_t m_start = j_cust.find('[');
+                size_t m_end   = j_cust.rfind(']');
+                if (m_start != std::string_view::npos && m_end != std::string_view::npos && m_end > m_start) {
+                    std::string_view list = j_cust.substr(m_start + 1, m_end - m_start - 1);
+                    size_t current = 0;
+                    while (current < list.size() &&
+                           tx.customer.known_merchants_count < static_cast<int>(tx.customer.known_merchants.size())) {
+                        size_t s = list.find('"', current);
+                        if (s == std::string_view::npos) break;
+                        size_t e = list.find('"', s + 1);
+                        if (e == std::string_view::npos) break;
+                        tx.customer.known_merchants[tx.customer.known_merchants_count++] = list.substr(s + 1, e - s - 1);
+                        current = e + 1;
+                    }
                 }
             }
             

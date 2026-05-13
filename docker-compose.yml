@@ -1,7 +1,7 @@
-
 services:
   lb:
     image: haproxy:2.9-alpine
+    platform: linux/amd64
     container_name: lb
     ports:
       - "9999:9999"
@@ -13,34 +13,36 @@ services:
     deploy:
       resources:
         limits:
-          cpus: '0.10'
-          memory: 20M
+          cpus: '0.20'
+          memory: 40M
     networks:
       - rinha-network
 
   api1:
     build: .
+    platform: linux/amd64
     container_name: api1
     environment:
       - RESOURCES_DIR=resources
     deploy:
       resources:
         limits:
-          cpus: '0.45'
-          memory: 165M
+          cpus: '0.40'
+          memory: 150M
     networks:
       - rinha-network
 
   api2:
     build: .
+    platform: linux/amd64
     container_name: api2
     environment:
       - RESOURCES_DIR=resources
     deploy:
       resources:
         limits:
-          cpus: '0.45'
-          memory: 165M
+          cpus: '0.40'
+          memory: 150M
     networks:
       - rinha-network
 

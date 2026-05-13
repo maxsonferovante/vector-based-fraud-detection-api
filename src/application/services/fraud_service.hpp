@@ -23,19 +23,17 @@ public:
         : normalizer_(std::move(normalizer)), vector_search_(std::move(vector_search)) {}
 
     domain::FraudResult execute(const domain::Transaction& tx, const domain::Customer& customer) override {
-        // 1. Vectorizar
+        // Transform transaction into a feature vector
         auto vector = normalizer_->vectorize(tx);
 
-        // Optimization 4: Removed synchronous logging from hot path to avoid blocking the event loop
-
-        // 2. Buscar os 5 vizinhos mais próximos
+        // Retrieve K nearest neighbors from the search engine
         auto neighbors = vector_search_->search(vector, 5);
 
-        // 3. Calcular o score
         if (neighbors.empty()) {
             return { true, 0.0 };
         }
 
+        // Calculate score based on neighbor labels
         int fraud_count = 0;
         for (const auto& n : neighbors) {
             if (n.is_fraud) {

@@ -3,10 +3,11 @@
 #include <vector>
 #include <thread>
 #include <cstdlib>
+#include <algorithm>
 #include "src/application/services/fraud_service.hpp"
 #include "src/infrastructure/adapters/web/web_adapter.hpp"
 #include "src/infrastructure/adapters/web/http_server.hpp"
-#include "src/infrastructure/adapters/vector_search/faiss_adapter.hpp"
+#include "src/infrastructure/adapters/vector_search/simd_ivf_matcher.hpp"
 #include "src/infrastructure/adapters/vector_search/data_loader.hpp"
 #include "src/infrastructure/logging/logger.hpp"
 
@@ -19,61 +20,51 @@ int main(int argc, char* argv[]) {
         unsigned short port = 9999;
         auto const address = boost::asio::ip::make_address("0.0.0.0");
 
-        // Obter diretório de recursos da variável de ambiente ou usar padrão absoluto do Docker
         const char* res_dir_env = std::getenv("RESOURCES_DIR");
         std::string res_dir = res_dir_env ? res_dir_env : "/app/resources";
 
-        // 1. Inicializar Motor de Busca (FAISS)
-        auto faiss_adapter = std::make_shared<FaissAdapter>();
+        auto matcher = std::make_shared<SimdIvfMatcher>();
 
-        // 2. Carregar dados e configurações (agora injeta o FAISS diretamente e faz streaming)
         domain::services::NormalizationConfig config;
-        DataLoader::load_data(res_dir, faiss_adapter, config);
+        DataLoader::load_data(res_dir, matcher, config);
+        matcher->log_memory_stats();
 
         if (prepare_mode) {
-            DataLoader::save_binary_index(faiss_adapter, res_dir);
+            DataLoader::save_binary_index(matcher, res_dir);
             infrastructure::logging::Logger::info("Preparation complete.");
             return 0;
         }
 
-        // FAIL-FAST: Se não carregou dados, a API não deve subir
-        if (faiss_adapter->get_total_vectors() == 0) {
-            infrastructure::logging::Logger::error("CRITICAL: No data loaded from " + res_dir + ". Aborting.");
+        if (matcher->get_total_vectors() == 0) {
+            infrastructure::logging::Logger::error("CRITICAL: No data loaded. Aborting.");
             return 1;
         }
 
-        // 3. Inicializar Normalizador
-        auto normalizer = std::make_shared<domain::services::Normalizer>(config);
+        auto normalizer    = std::make_shared<domain::services::Normalizer>(config);
+        auto fraud_service = std::make_shared<application::services::FraudService>(normalizer, matcher);
+        auto web_adapter   = std::make_shared<infrastructure::adapters::web::WebAdapter>(fraud_service);
 
-        // 4. Inicializar Serviço de Fraude (Use Case)
-        auto fraud_service = std::make_shared<application::services::FraudService>(normalizer, faiss_adapter);
+        // SimdIvfMatcher é read-only após load — sem mutex para search() concorrente.
+        // 2 threads: uma em I/O wait + uma em SIMD search; ideal para 0.47 vCPU.
+        const int num_threads = std::clamp(
+            static_cast<int>(std::thread::hardware_concurrency()), 1, 2);
 
-        // 5. Inicializar Adaptador Web
-        auto web_adapter = std::make_shared<infrastructure::adapters::web::WebAdapter>(fraud_service);
+        infrastructure::logging::Logger::info(
+            "Starting on port " + std::to_string(port) +
+            " threads=" + std::to_string(num_threads));
 
-        // 6. Iniciar Servidor HTTP
-        int threads = 2;
-        boost::asio::io_context ioc{threads};
+        boost::asio::io_context ioc{num_threads};
         auto listener = std::make_shared<infrastructure::adapters::web::Listener>(
-            ioc, 
-            tcp::endpoint{address, port}, 
-            web_adapter
-        );
-
-        infrastructure::logging::Logger::info("Rinha API started on port " + std::to_string(port) + " with " + std::to_string(threads) + " threads");
-        
+            ioc, tcp::endpoint{address, port}, web_adapter);
         listener->run();
 
-        // Rodar ioc em múltiplas threads para evitar bloqueios
-        std::vector<std::thread> v;
-        v.reserve(threads - 1);
-        for(auto i = threads - 1; i > 0; --i)
-            v.emplace_back([&ioc]{ ioc.run(); });
-        
+        std::vector<std::thread> pool;
+        pool.reserve(static_cast<size_t>(num_threads - 1));
+        for (int i = 0; i < num_threads - 1; ++i)
+            pool.emplace_back([&ioc]{ ioc.run(); });
         ioc.run();
 
-        // Aguardar threads (embora ioc.run() bloqueie)
-        for(auto& t : v) t.join();
+        for (auto& t : pool) t.join();
 
     } catch (const std::exception& e) {
         infrastructure::logging::Logger::error(std::string("Critical error: ") + e.what());

@@ -13,7 +13,6 @@
 namespace domain {
 namespace services {
 
-// Heterogeneous hash for unordered_map lookup with string_view
 struct StringHash {
     using is_transparent = void;
     std::size_t operator()(std::string_view sv) const {
@@ -29,7 +28,6 @@ struct NormalizationConfig {
     double max_km = 1000.0;
     double max_tx_count_24h = 20.0;
     double max_merchant_avg_amount = 10000.0;
-    // Optimization 5: O(1) heterogeneous lookup without allocations
     std::unordered_map<std::string, double, StringHash, std::equal_to<>> mcc_risk;
 };
 
@@ -74,7 +72,6 @@ public:
         v[0] = clamp(tx.transaction.amount * inv_max_amount);
         v[1] = clamp(static_cast<double>(tx.transaction.installments) * inv_max_installments);
         
-        // Proteção contra divisão por zero
         double avg = (tx.customer.avg_amount > 0) ? tx.customer.avg_amount : 1.0;
         v[2] = clamp((tx.transaction.amount / avg) * inv_amount_vs_avg_ratio);
 
@@ -100,8 +97,8 @@ public:
         v[10] = tx.terminal.card_present ? 1.0f : 0.0f;
 
         bool known = false;
-        for (const auto& m_id : tx.customer.known_merchants) {
-            if (m_id == tx.merchant.id) {
+        for (int i = 0; i < tx.customer.known_merchants_count; ++i) {
+            if (tx.customer.known_merchants[i] == tx.merchant.id) {
                 known = true;
                 break;
             }
@@ -128,7 +125,9 @@ private:
         int64_t unix_timestamp;
     };
 
-    // Optimization 6: Pure mathematical date parsing bypassing libc
+    /**
+     * Mathematical ISO 8601 date parsing to bypass standard library overhead.
+     */
     static FastDateResult parse_date_fast(std::string_view s) {
         if (s.size() < 19) return {0, 0, 0};
 
@@ -139,18 +138,13 @@ private:
         int min = (s[14]-'0')*10 + (s[15]-'0');
         int sec = (s[17]-'0')*10 + (s[18]-'0');
 
-        // Unix timestamp calculation
         int yy = y - (m <= 2 ? 1 : 0);
         int mm = (m <= 2 ? m + 12 : m);
         int days = 365 * yy + yy / 4 - yy / 100 + yy / 400 + 306 * (mm + 1) / 10 + d - 719528;
         int64_t ts = static_cast<int64_t>(days) * 86400 + h * 3600 + min * 60 + sec;
 
-        // Day of week calculation (0=Monday, 6=Sunday for Rinha specs)
-        // Jan 1, 1970 was Thursday.
         int wday = (days + 3) % 7;
-        if (wday < 0) wday += 7; // Ensures positive modulo
-        // Mapping: 0=Mon..6=Sun
-        // Standard wday gives 0=Mon, 1=Tue...6=Sun based on days offset (epoch offset handles it)
+        if (wday < 0) wday += 7;
 
         return {h, wday, ts};
     }

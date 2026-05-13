@@ -19,7 +19,7 @@ namespace web {
 
 class Session : public std::enable_shared_from_this<Session> {
     tcp::socket socket_;
-    beast::flat_buffer buffer_;
+    beast::flat_buffer buffer_{4096}; // pré-alocado; request típico ~800 bytes
     http::request<http::string_body> req_;
     std::shared_ptr<WebAdapter> adapter_;
 
@@ -27,7 +27,11 @@ public:
     Session(tcp::socket socket, std::shared_ptr<WebAdapter> adapter)
         : socket_(std::move(socket)), adapter_(std::move(adapter)) {}
 
-    void run() { do_read(); }
+    void run() {
+        boost::system::error_code ec;
+        socket_.set_option(tcp::no_delay(true), ec); // desabilita Nagle
+        do_read();
+    }
 
 private:
     void do_read() {
