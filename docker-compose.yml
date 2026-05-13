@@ -13,13 +13,13 @@ services:
     deploy:
       resources:
         limits:
-          cpus: '0.06'
-          memory: 14M
+          cpus: '0.20'
+          memory: 40M
     networks:
       - rinha-network
 
   api1:
-    image: maxsonferovante/vector-based-fraud-detection-api:12-05-2026-20-07-55
+    image: maxsonferovante/vector-based-fraud-detection-api:12-05-2026-22-17-19
     platform: linux/amd64
     container_name: api1
     environment:
@@ -27,13 +27,13 @@ services:
     deploy:
       resources:
         limits:
-          cpus: '0.47'
-          memory: 168M
+          cpus: '0.40'
+          memory: 150M
     networks:
       - rinha-network
 
   api2:
-    image: maxsonferovante/vector-based-fraud-detection-api:12-05-2026-20-07-55
+    image: maxsonferovante/vector-based-fraud-detection-api:12-05-2026-22-17-19
     platform: linux/amd64
     container_name: api2
     environment:
@@ -41,8 +41,8 @@ services:
     deploy:
       resources:
         limits:
-          cpus: '0.47'
-          memory: 168M
+          cpus: '0.40'
+          memory: 150M
     networks:
       - rinha-network
 
