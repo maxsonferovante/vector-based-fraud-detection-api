@@ -6,3 +6,5 @@ cmake-build-debug/
 *.a
 *.so
 vector_based_fraud_detection_api
+/docs/
+/result/
