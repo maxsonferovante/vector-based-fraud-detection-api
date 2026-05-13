@@ -8,6 +8,11 @@
 #include <memory>
 #include "web_adapter.hpp"
 
+#ifdef __linux__
+    #include <netinet/tcp.h>
+    #include <sys/socket.h>
+#endif
+
 namespace beast = boost::beast;
 namespace http = beast::http;
 namespace net = boost::asio;
@@ -29,7 +34,19 @@ public:
 
     void run() {
         boost::system::error_code ec;
-        socket_.set_option(tcp::no_delay(true), ec); // desabilita Nagle
+        // TCP_NODELAY: desabilita Nagle — menor latência por pacote
+        socket_.set_option(tcp::no_delay(true), ec);
+
+#ifdef __linux__
+        int fd = socket_.native_handle();
+        int one = 1;
+        // TCP_QUICKACK: desabilita delayed ACK — responde ao SYN-ACK mais rápido
+        ::setsockopt(fd, IPPROTO_TCP, TCP_QUICKACK, &one, sizeof(one));
+        // TCP_NOTSENT_LOWAT: acorda o escritor mais cedo para reduzir latência de flush
+        int lowat = 16 * 1024;
+        ::setsockopt(fd, IPPROTO_TCP, TCP_NOTSENT_LOWAT, &lowat, sizeof(lowat));
+#endif
+
         do_read();
     }
 
@@ -75,6 +92,14 @@ public:
         beast::error_code ec;
         acceptor_.open(endpoint.protocol(), ec);
         acceptor_.set_option(net::socket_base::reuse_address(true), ec);
+
+#ifdef __linux__
+        // TCP_FASTOPEN: permite dados no SYN para reduzir handshake latency
+        int qlen = 4096;
+        ::setsockopt(acceptor_.native_handle(), IPPROTO_TCP, TCP_FASTOPEN,
+                     &qlen, sizeof(qlen));
+#endif
+
         acceptor_.bind(endpoint, ec);
         acceptor_.listen(net::socket_base::max_listen_connections, ec);
     }

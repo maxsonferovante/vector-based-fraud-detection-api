@@ -27,6 +27,7 @@ int main(int argc, char* argv[]) {
 
         domain::services::NormalizationConfig config;
         DataLoader::load_data(res_dir, matcher, config);
+        matcher->apply_hugepages();
         matcher->log_memory_stats();
 
         if (prepare_mode) {

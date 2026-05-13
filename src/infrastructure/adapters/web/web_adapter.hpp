@@ -10,12 +10,12 @@
 #include <cmath>
 #include "../../../application/ports/in/analyze_fraud_use_case.hpp"
 #include "../../logging/logger.hpp"
-#include "../../parser/json_parser.hpp"
+#include "../../parser/simdjson_request_parser.hpp"
 
 namespace beast = boost::beast;
 namespace http = beast::http;
 using tcp = boost::asio::ip::tcp;
-using FastParser = infrastructure::parser::FastJsonScanner;
+using SimdjsonParser = infrastructure::parser::SimdjsonRequestParser;
 
 namespace infrastructure {
 namespace adapters {
@@ -24,6 +24,8 @@ namespace web {
 class WebAdapter {
     std::shared_ptr<application::ports::in::AnalyzeFraudUseCase> use_case_;
 
+    // Respostas pré-computadas como strings estáticas — zero alocação no hot path.
+    // fraud_score só pode ser 0/5, 1/5, 2/5, 3/5, 4/5, 5/5 → 6 respostas fixas.
     static constexpr std::string_view RESP_READY = "{\"service\":\"fraud-detection-api\",\"status\":\"ready\"}";
     static constexpr std::string_view RESP_NOT_FOUND = "{\"error\":\"Not Found\"}";
     static constexpr std::string_view RESP_BAD_REQUEST = "{\"error\":\"Invalid Request\"}";
@@ -37,97 +39,57 @@ class WebAdapter {
         "{\"approved\":false,\"fraud_score\":1.0}"
     };
 
+    // Headers constantes pré-setados; apenas body e status mudam por request.
+    static constexpr std::string_view CT_JSON = "application/json";
+    static constexpr std::string_view SERVER_NAME = "Rinha API";
+
 public:
     explicit WebAdapter(std::shared_ptr<application::ports::in::AnalyzeFraudUseCase> use_case)
         : use_case_(std::move(use_case)) {}
 
     http::response<http::string_body> handle_request(tcp::endpoint remote, http::request<http::string_body> const& req) {
-        if (req.method() == http::verb::get && req.target() == "/ready") {
-            return make_static_response(http::status::ok, req.version(), req.keep_alive(), RESP_READY);
-        } 
+        // Fast path: check target length first to avoid string comparison
+        const auto target = req.target();
         
-        if (req.method() == http::verb::post && req.target() == "/fraud-score") {
+        if (req.method() == http::verb::post && target.size() == 12 && target == "/fraud-score") {
             return process_fraud_score(req);
         }
 
-        return make_static_response(http::status::not_found, req.version(), req.keep_alive(), RESP_NOT_FOUND);
+        if (req.method() == http::verb::get && target.size() == 6 && target == "/ready") {
+            return make_response(http::status::ok, req.version(), req.keep_alive(), RESP_READY);
+        }
+
+        return make_response(http::status::not_found, req.version(), req.keep_alive(), RESP_NOT_FOUND);
     }
 
 private:
     http::response<http::string_body> process_fraud_score(http::request<http::string_body> const& req) {
         try {
-            std::string_view body = req.body();
+            domain::Transaction tx{};
             
-            domain::Transaction tx;
-            tx.id = FastParser::find_string(body, FastParser::K_ID);
-            
-            std::string_view j_tx = FastParser::find_object(body, FastParser::K_TX);
-            tx.transaction = {
-                FastParser::find_double(j_tx, FastParser::K_AMOUNT), 
-                FastParser::find_int(j_tx, FastParser::K_INST), 
-                FastParser::find_string(j_tx, FastParser::K_REQ)
-            };
-            
-            std::string_view j_cust = FastParser::find_object(body, FastParser::K_CUST);
-            tx.customer.avg_amount = FastParser::find_double(j_cust, FastParser::K_AVG);
-            tx.customer.tx_count_24h = FastParser::find_int(j_cust, FastParser::K_COUNT);
-            
-            {
-                size_t m_start = j_cust.find('[');
-                size_t m_end   = j_cust.rfind(']');
-                if (m_start != std::string_view::npos && m_end != std::string_view::npos && m_end > m_start) {
-                    std::string_view list = j_cust.substr(m_start + 1, m_end - m_start - 1);
-                    size_t current = 0;
-                    while (current < list.size() &&
-                           tx.customer.known_merchants_count < static_cast<int>(tx.customer.known_merchants.size())) {
-                        size_t s = list.find('"', current);
-                        if (s == std::string_view::npos) break;
-                        size_t e = list.find('"', s + 1);
-                        if (e == std::string_view::npos) break;
-                        tx.customer.known_merchants[tx.customer.known_merchants_count++] = list.substr(s + 1, e - s - 1);
-                        current = e + 1;
-                    }
-                }
-            }
-            
-            std::string_view j_merch = FastParser::find_object(body, FastParser::K_MERCH);
-            tx.merchant = {
-                FastParser::find_string(j_merch, FastParser::K_ID), 
-                FastParser::find_string(j_merch, FastParser::K_MCC), 
-                FastParser::find_double(j_merch, FastParser::K_AVG)
-            };
-            
-            std::string_view j_term = FastParser::find_object(body, FastParser::K_TERM);
-            tx.terminal = {
-                FastParser::find_bool(j_term, FastParser::K_ONLINE), 
-                FastParser::find_bool(j_term, FastParser::K_CARD), 
-                FastParser::find_double(j_term, FastParser::K_HOME)
-            };
-            
-            std::string_view j_last = FastParser::find_object(body, FastParser::K_LAST);
-            if (!j_last.empty()) {
-                tx.last_transaction = domain::LastTransaction{
-                    FastParser::find_string(j_last, FastParser::K_TS), 
-                    FastParser::find_double(j_last, FastParser::K_KM)
-                };
+            // simdjson ondemand parser — SIMD-acelerado, thread-local
+            if (!SimdjsonParser::parse(req.body(), tx)) {
+                return make_response(http::status::bad_request, req.version(), req.keep_alive(), RESP_BAD_REQUEST);
             }
 
             auto result = use_case_->execute(tx, tx.customer);
 
+            // Mapeia fraud_score para índice [0,5]: fraud_count/5 * 5 = fraud_count
             int idx = static_cast<int>(std::round(result.fraud_score * 5.0));
             idx = std::clamp(idx, 0, 5);
 
-            return make_static_response(http::status::ok, req.version(), req.keep_alive(), RESP_FRAUD[idx]);
+            return make_response(http::status::ok, req.version(), req.keep_alive(), RESP_FRAUD[idx]);
 
         } catch (...) {
-            return make_static_response(http::status::bad_request, req.version(), req.keep_alive(), RESP_BAD_REQUEST);
+            return make_response(http::status::bad_request, req.version(), req.keep_alive(), RESP_BAD_REQUEST);
         }
     }
 
-    http::response<http::string_body> make_static_response(http::status status, unsigned version, bool keep_alive, std::string_view body) {
+    http::response<http::string_body> make_response(http::status status, unsigned version, 
+                                                     bool keep_alive, std::string_view body) {
         http::response<http::string_body> res{status, version};
-        res.set(http::field::server, "Rinha API");
-        res.set(http::field::content_type, "application/json");
+        res.set(http::field::server, SERVER_NAME);
+        res.set(http::field::content_type, CT_JSON);
         res.keep_alive(keep_alive);
         res.body() = std::string(body);
         res.prepare_payload();

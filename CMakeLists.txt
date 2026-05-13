@@ -6,9 +6,34 @@ set(CMAKE_CXX_STANDARD 26)
 # -march=native: local dev; Dockerfile sobrescreve com -march=x86-64-v3 para portabilidade
 set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -O3 -march=native -fno-rtti -funroll-loops")
 
-# LTO: controlado pela variável de ambiente CPP_LTO (default: OFF).
+# ──────────────────────────────────────────────
+# PGO (Profile-Guided Optimization)
+# Uso:
+#   cmake -DPGO_GENERATE=ON ..   → gera instrumentação
+#   cmake -DPGO_USE=ON ..        → consome perfil
+# ──────────────────────────────────────────────
+option(PGO_GENERATE "Instrument with -fprofile-generate" OFF)
+option(PGO_USE      "Consume profile via -fprofile-use"  OFF)
+set(PGO_DIR "${CMAKE_BINARY_DIR}/pgo-data" CACHE PATH "PGO profile data directory")
+
+if(PGO_GENERATE AND PGO_USE)
+    message(FATAL_ERROR "PGO_GENERATE and PGO_USE are mutually exclusive")
+endif()
+
+if(PGO_GENERATE)
+    add_compile_options(-fprofile-generate=${PGO_DIR})
+    add_link_options(-fprofile-generate=${PGO_DIR})
+    message(STATUS "PGO: instrumentation mode (generate → ${PGO_DIR})")
+elseif(PGO_USE)
+    add_compile_options(-fprofile-use=${PGO_DIR} -fprofile-correction)
+    add_link_options(-fprofile-use=${PGO_DIR} -fprofile-correction)
+    message(STATUS "PGO: optimization mode (use ← ${PGO_DIR})")
+endif()
+
+# ──────────────────────────────────────────────
+# LTO: controlado pela variável CPP_LTO.
 # Para ativar localmente: cmake -DCPP_LTO=ON ..
-# Não ativar via Dockerfile: GCC 13 lança ICE sob emulação QEMU x86-64.
+# ──────────────────────────────────────────────
 option(CPP_LTO "Enable Link-Time Optimization" OFF)
 if(CPP_LTO)
     include(CheckIPOSupported)
@@ -20,9 +45,35 @@ if(CPP_LTO)
     endif()
 endif()
 
+# ──────────────────────────────────────────────
+# Hot path flags: sem exceções/RTTI, sem stack protector
+# ──────────────────────────────────────────────
+add_compile_options(
+    -fno-exceptions
+    -fno-stack-protector
+    -fno-asynchronous-unwind-tables
+    -ffast-math
+    -fno-math-errno
+)
+
 find_package(Boost REQUIRED)
 find_package(Threads REQUIRED)
 find_package(ZLIB REQUIRED)
+
+# ──────────────────────────────────────────────
+# simdjson: JSON parser SIMD-acelerado
+# ──────────────────────────────────────────────
+include(FetchContent)
+FetchContent_Declare(
+    simdjson
+    GIT_REPOSITORY https://github.com/simdjson/simdjson.git
+    GIT_TAG        v3.10.1
+    GIT_SHALLOW    TRUE
+)
+set(SIMDJSON_BUILD_STATIC_LIB ON CACHE BOOL "" FORCE)
+set(SIMDJSON_DEVELOPER_MODE OFF CACHE BOOL "" FORCE)
+set(SIMDJSON_JUST_LIBRARY ON CACHE BOOL "" FORCE)
+FetchContent_MakeAvailable(simdjson)
 
 include_directories(${Boost_INCLUDE_DIRS})
 
@@ -36,6 +87,7 @@ endif()
 target_link_libraries(vector_based_fraud_detection_api PRIVATE
     Threads::Threads
     ZLIB::ZLIB
+    simdjson::simdjson
 )
 
 if(NOT CMAKE_BINARY_DIR STREQUAL CMAKE_SOURCE_DIR)
