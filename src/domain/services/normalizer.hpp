@@ -28,7 +28,11 @@ struct NormalizationConfig {
     double max_km = 1000.0;
     double max_tx_count_24h = 20.0;
     double max_merchant_avg_amount = 10000.0;
-    std::unordered_map<std::string, double, StringHash, std::equal_to<>> mcc_risk;
+    std::array<float, 10000> mcc_risk_table;
+
+    NormalizationConfig() {
+        mcc_risk_table.fill(0.5f);
+    }
 };
 
 struct LUT {
@@ -105,8 +109,21 @@ public:
         }
         v[11] = known ? 0.0f : 1.0f;
 
-        auto it = config_.mcc_risk.find(tx.merchant.mcc);
-        v[12] = (it != config_.mcc_risk.end()) ? static_cast<float>(it->second) : 0.5f;
+        // O(1) direct lookup for MCC risk
+        int mcc_code = 0;
+        if (tx.merchant.mcc.size() == 4) {
+            mcc_code = (tx.merchant.mcc[0] - '0') * 1000 + 
+                       (tx.merchant.mcc[1] - '0') * 100 + 
+                       (tx.merchant.mcc[2] - '0') * 10 + 
+                       (tx.merchant.mcc[3] - '0');
+        }
+        
+        if (mcc_code >= 0 && mcc_code < 10000) {
+            v[12] = config_.mcc_risk_table[mcc_code];
+        } else {
+            v[12] = 0.5f;
+        }
+
         v[13] = clamp(tx.merchant.avg_amount * inv_max_merchant_avg_amount);
 
         return v;

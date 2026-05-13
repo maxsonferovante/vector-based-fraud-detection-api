@@ -29,14 +29,14 @@ public:
         // Retrieve K nearest neighbors from the search engine
         auto neighbors = vector_search_->search(vector, 5);
 
-        if (neighbors.empty()) {
+        if (neighbors.count == 0) {
             return { true, 0.0 };
         }
 
         // Calculate score based on neighbor labels
         int fraud_count = 0;
-        for (const auto& n : neighbors) {
-            if (n.is_fraud) {
+        for (size_t i = 0; i < neighbors.count; ++i) {
+            if (neighbors.items[i].is_fraud) {
                 fraud_count++;
             }
         }

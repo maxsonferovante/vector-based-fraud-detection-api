@@ -46,8 +46,9 @@ public:
         labels_.push_back(is_fraud ? 1 : 0);
     }
 
-    std::vector<application::ports::out::SearchResult> search(const domain::Vector14& query_vector, int k) override {
-        if (database_.empty()) return {};
+    application::ports::out::SearchResultList<5> search(const domain::Vector14& query_vector, int k) override {
+        application::ports::out::SearchResultList<5> results;
+        if (database_.empty()) return results;
 
         alignas(32) int16_t q[16];
         for (int i = 0; i < 14; ++i) q[i] = static_cast<int16_t>(query_vector[i] * SCALE);
@@ -191,11 +192,10 @@ public:
         }
 #endif
 
-        std::vector<application::ports::out::SearchResult> results;
-        results.reserve(count);
         for (int i = 0; i < count; ++i) {
-            results.push_back({labels_[top_k[i].index] == 1, (float)top_k[i].dist});
+            results.items[i] = {labels_[top_k[i].index] == 1, (float)top_k[i].dist};
         }
+        results.count = count;
         return results;
     }
 

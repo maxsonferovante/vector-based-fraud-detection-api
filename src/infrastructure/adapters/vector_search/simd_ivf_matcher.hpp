@@ -31,35 +31,28 @@ namespace vector_search {
 // Índice construído offline via train_and_build (--prepare);
 // search() é read-only e thread-safe após a construção.
 class SimdIvfMatcher : public application::ports::out::VectorSearchPort {
-public:
-    // Norm pruning: uint16_t norm pré-computado permite lower-bound check via
-    // desigualdade triangular, evitando ~50-80% dos cálculos SIMD de distância.
-    // Buckets são ordenados por norm para early termination (bail_norm).
-    // sizeof = 36 bytes → 3M × 36 = ~103 MB (dentro do budget de 150 MB).
-    struct PaddedVector {
-        int16_t elements[16];   // 32 bytes — vetor quantizado (14 dims + 2 padding)
-        uint16_t norm;          //  2 bytes — L2 norm pré-computada (ceil(sqrt(sum_sq)))
-        bool is_fraud;          //  1 byte
-        // padding:                1 byte  (alinhamento a 2 bytes)
-    };
-
 private:
     static constexpr size_t   NUM_CLUSTERS   = 2048;
-    static constexpr size_t   PROBE_CLUSTERS = 16;
+    static constexpr size_t   PROBE_CLUSTERS = 32;  // Increased from 16 for better recall
     static constexpr float    SCALE          = 4096.0f;
     static constexpr int      KMEANS_ITERS   = 3;
-    static constexpr size_t   PREFETCH_AHEAD = 16;  // prefetch 16 vetores à frente
+    static constexpr size_t   PREFETCH_AHEAD = 16;
 
     struct alignas(32) Centroid {
         int16_t elements[16];
     };
 
-    std::vector<Centroid>                   centroids_;
-    std::vector<std::vector<PaddedVector>>  buckets_;
+    // SoA (Struct of Arrays) format for better cache locality and SIMD alignment
+    struct Bucket {
+        std::vector<Centroid> elements; // Each Centroid is 16 int16_t, 32-byte aligned
+        std::vector<uint16_t> norms;
+        std::vector<uint8_t>  labels;
+    };
+
+    std::vector<Centroid> centroids_;
+    std::vector<Bucket>   buckets_;
     size_t total_vectors_ = 0;
 
-    // --- Quantização com arredondamento ---
-    // Reduz bias de truncamento: +0.5f para positivos, -0.5f para negativos (sentinela -1).
     static inline int16_t quantize(float v) noexcept {
         float scaled = v * SCALE;
         return (v >= 0.0f)
@@ -67,9 +60,6 @@ private:
             : static_cast<int16_t>(scaled - 0.5f);
     }
 
-    // --- Norm computation ---
-    // Retorna ceil(sqrt(sum of squares)) das 14 dimensões quantizadas.
-    // uint16_t suficiente: max = ceil(sqrt(14 * 4096^2)) = 15327.
     static inline uint16_t compute_norm(const int16_t* v) noexcept {
         int32_t sum = 0;
         for (int i = 0; i < 14; ++i) {
@@ -82,9 +72,6 @@ private:
         return up;
     }
 
-    // --- Bail norm ---
-    // Limite superior para early termination em buckets ordenados por norm.
-    // Se norm_ref >= bail_norm, ||q - ref||^2 >= threshold (pela desigualdade triangular).
     static inline uint32_t compute_bail_norm(uint32_t q_norm, int32_t threshold) noexcept {
         if (threshold == INT32_MAX) return UINT32_MAX;
         double s = std::sqrt(static_cast<double>(threshold));
@@ -94,14 +81,13 @@ private:
         return (b > UINT32_MAX) ? UINT32_MAX : static_cast<uint32_t>(b);
     }
 
-    // simd_dist: distância euclidiana quadrada para ponteiros 32-byte aligned (Centroid).
     static inline int32_t simd_dist(const int16_t* __restrict__ a,
                                     const int16_t* __restrict__ b) noexcept {
 #if defined(__x86_64__) || defined(_M_X64)
         __m256i va  = _mm256_load_si256(reinterpret_cast<const __m256i*>(a));
         __m256i vb  = _mm256_load_si256(reinterpret_cast<const __m256i*>(b));
         __m256i d   = _mm256_sub_epi16(va, vb);
-        __m256i sq  = _mm256_madd_epi16(d, d);     // horizontal multiply-add pairwise → int32
+        __m256i sq  = _mm256_madd_epi16(d, d);
         __m128i lo  = _mm256_castsi256_si128(sq);
         __m128i hi  = _mm256_extracti128_si256(sq, 1);
         __m128i s   = _mm_add_epi32(lo, hi);
@@ -130,34 +116,16 @@ private:
 #endif
     }
 
-    // simd_dist_pv: variante com loadu para PaddedVector (sem alignas → sem garantia de alinhamento).
-    static inline int32_t simd_dist_pv(const int16_t* __restrict__ a,
-                                       const int16_t* __restrict__ b) noexcept {
-#if defined(__x86_64__) || defined(_M_X64)
-        __m256i va  = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(a));
-        __m256i vb  = _mm256_load_si256(reinterpret_cast<const __m256i*>(b));
-        __m256i d   = _mm256_sub_epi16(va, vb);
-        __m256i sq  = _mm256_madd_epi16(d, d);
-        __m128i lo  = _mm256_castsi256_si128(sq);
-        __m128i hi  = _mm256_extracti128_si256(sq, 1);
-        __m128i s   = _mm_add_epi32(lo, hi);
-        s = _mm_add_epi32(s, _mm_shuffle_epi32(s, _MM_SHUFFLE(1,0,3,2)));
-        s = _mm_add_epi32(s, _mm_shuffle_epi32(s, _MM_SHUFFLE(2,3,0,1)));
-        return _mm_cvtsi128_si32(s);
-#else
-        return simd_dist(a, b); // scalar e NEON: loadu e load são equivalentes
-#endif
-    }
-
 public:
     SimdIvfMatcher() {
         buckets_.resize(NUM_CLUSTERS);
-        for (auto& b : buckets_) b.reserve(2000);
+        for (auto& b : buckets_) {
+            b.elements.reserve(2000);
+            b.norms.reserve(2000);
+            b.labels.reserve(2000);
+        }
     }
 
-    // Constrói o índice IVF com k-means iterativo.
-    // Executado apenas no --prepare (offline); impacto zero no runtime.
-    // Fluxo: random seed → KMEANS_ITERS x (assignment SIMD + update int64) → fill buckets → sort by norm.
     void train_and_build(const std::vector<std::pair<std::array<float, 14>, bool>>& data) {
         if (data.empty()) return;
 
@@ -168,7 +136,6 @@ public:
                               std::to_string(KMEANS_ITERS) + " clusters=" +
                               std::to_string(K));
 
-        // Converte float→int16 com arredondamento; alinhado a 32 bytes para loads SIMD.
         struct alignas(32) AlignedVec { int16_t e[16]; };
         std::vector<AlignedVec> vecs(N);
         for (size_t i = 0; i < N; ++i) {
@@ -178,7 +145,6 @@ public:
             vecs[i].e[14] = 0; vecs[i].e[15] = 0;
         }
 
-        // Semente: amostragem aleatória com seed fixo para reprodutibilidade.
         std::mt19937 rng(42);
         std::vector<size_t> indices(N);
         std::iota(indices.begin(), indices.end(), 0);
@@ -191,7 +157,6 @@ public:
         std::vector<size_t> assignments(N);
 
         for (int iter = 0; iter < KMEANS_ITERS; ++iter) {
-            // Assignment: cada ponto ao centroide mais próximo via simd_dist.
             for (size_t i = 0; i < N; ++i) {
                 int32_t best_dist = INT32_MAX;
                 size_t  best_c   = 0;
@@ -202,7 +167,6 @@ public:
                 assignments[i] = best_c;
             }
 
-            // Update: acumula em int64 para evitar overflow (N * SCALE^2 > INT32_MAX).
             struct Acc { int64_t sum[16]; size_t count; };
             std::vector<Acc> accum(K, {{}, 0});
 
@@ -222,45 +186,56 @@ public:
         }
 
         total_vectors_ = 0;
-        for (auto& b : buckets_) b.clear();
+        for (auto& b : buckets_) {
+            b.elements.clear();
+            b.norms.clear();
+            b.labels.clear();
+        }
+
+        // Temporal struct for sorting
+        struct SortingItem {
+            Centroid elements;
+            uint16_t norm;
+            bool is_fraud;
+        };
+        std::vector<std::vector<SortingItem>> temp_buckets(K);
 
         for (size_t i = 0; i < N; ++i) {
-            PaddedVector pv;
-            std::copy(vecs[i].e, vecs[i].e + 16, pv.elements);
-            pv.norm = compute_norm(pv.elements);
-            pv.is_fraud = data[i].second;
-            buckets_[assignments[i]].push_back(pv);
+            SortingItem item;
+            std::copy(vecs[i].e, vecs[i].e + 16, item.elements.elements);
+            item.norm = compute_norm(item.elements.elements);
+            item.is_fraud = data[i].second;
+            temp_buckets[assignments[i]].push_back(item);
             total_vectors_++;
         }
 
-        // Ordena cada bucket por norm (ascendente) para early termination via bail_norm.
-        for (auto& b : buckets_) {
-            std::sort(b.begin(), b.end(),
-                [](const PaddedVector& a, const PaddedVector& b_) { return a.norm < b_.norm; });
-            b.shrink_to_fit();
+        for (size_t i = 0; i < K; ++i) {
+            std::sort(temp_buckets[i].begin(), temp_buckets[i].end(),
+                [](const SortingItem& a, const SortingItem& b) { return a.norm < b.norm; });
+            
+            for (const auto& item : temp_buckets[i]) {
+                buckets_[i].elements.push_back(item.elements);
+                buckets_[i].norms.push_back(item.norm);
+                buckets_[i].labels.push_back(item.is_fraud ? 1 : 0);
+            }
+            buckets_[i].elements.shrink_to_fit();
+            buckets_[i].norms.shrink_to_fit();
+            buckets_[i].labels.shrink_to_fit();
         }
 
         logging::Logger::info("Index ready: vectors=" + std::to_string(total_vectors_) +
                               " clusters=" + std::to_string(K));
     }
 
-    // Busca KNN em 2 fases com norm pruning e prefetch:
-    //   1. partial_sort sobre near_clusters para PROBE_CLUSTERS centroides.
-    //   2. Scan nos buckets selecionados com:
-    //      a) Lower-bound via norma (desigualdade triangular) → pula sem SIMD
-    //      b) Early termination via bail_norm (buckets sorted) → para o bucket
-    //      c) Prefetch de cache lines PREFETCH_AHEAD vetores à frente
-    //      d) Top-k com insertion sort
-    std::vector<application::ports::out::SearchResult>
+    application::ports::out::SearchResultList<5>
     search(const domain::Vector14& query_vector, int k) override {
-        if (total_vectors_ == 0) return {};
+        application::ports::out::SearchResultList<5> results;
+        if (total_vectors_ == 0) return results;
 
-        // Quantiza query com arredondamento
         alignas(32) int16_t q[16];
         for (int i = 0; i < 14; ++i) q[i] = quantize(query_vector[i]);
         q[14] = 0; q[15] = 0;
 
-        // Computa norma da query para pruning
         uint32_t q_norm_sq = 0;
         for (int i = 0; i < 14; ++i) {
             int32_t v = static_cast<int32_t>(q[i]);
@@ -274,7 +249,6 @@ public:
             q_norm = up;
         }
 
-        // Fase 1: encontra os PROBE_CLUSTERS centroides mais próximos
         struct ClusterDist { int32_t dist; uint16_t id; };
         ClusterDist near_clusters[NUM_CLUSTERS];
 
@@ -286,7 +260,6 @@ public:
                           near_clusters + nc,
                           [](const ClusterDist& a, const ClusterDist& b){ return a.dist < b.dist; });
 
-        // Fase 2: scan com norm pruning + prefetch
         struct Candidate { int32_t dist; bool is_fraud; };
         Candidate top_k[5];
         int count = 0;
@@ -295,41 +268,39 @@ public:
 
         for (size_t p = 0; p < PROBE_CLUSTERS && p < nc; ++p) {
             const auto& bucket = buckets_[near_clusters[p].id];
-            const size_t bsize = bucket.size();
+            const size_t bsize = bucket.elements.size();
             if (bsize == 0) continue;
 
-            const PaddedVector* bdata = bucket.data();
+            const Centroid* b_elements = bucket.elements.data();
+            const uint16_t* b_norms = bucket.norms.data();
+            const uint8_t*  b_labels = bucket.labels.data();
 
             for (size_t vi = 0; vi < bsize; ++vi) {
-                // Early termination: bucket sorted by norm; se norm >= bail, todo o resto pula
-                if (static_cast<uint32_t>(bdata[vi].norm) >= bail_norm) break;
+                if (static_cast<uint32_t>(b_norms[vi]) >= bail_norm) break;
 
-                // Prefetch: traz cache line do vetor PREFETCH_AHEAD posições à frente
 #if defined(__x86_64__) || defined(_M_X64)
                 if (vi + PREFETCH_AHEAD < bsize) {
-                    _mm_prefetch(reinterpret_cast<const char*>(&bdata[vi + PREFETCH_AHEAD]),
+                    _mm_prefetch(reinterpret_cast<const char*>(&b_elements[vi + PREFETCH_AHEAD]),
                                  _MM_HINT_T0);
                 }
 #elif defined(__aarch64__) || defined(_M_ARM64)
                 if (vi + PREFETCH_AHEAD < bsize) {
-                    __builtin_prefetch(&bdata[vi + PREFETCH_AHEAD], 0, 3);
+                    __builtin_prefetch(&b_elements[vi + PREFETCH_AHEAD], 0, 3);
                 }
 #endif
 
-                // Lower-bound pruning via desigualdade triangular:
-                // ||q - r|| >= |norm(q) - norm(r)|, portanto ||q-r||^2 >= (norm_q - norm_r)^2
                 {
-                    int32_t ndiff = static_cast<int32_t>(q_norm) - static_cast<int32_t>(bdata[vi].norm);
+                    int32_t ndiff = static_cast<int32_t>(q_norm) - static_cast<int32_t>(b_norms[vi]);
                     int32_t lb = ndiff * ndiff;
                     if (lb >= threshold) continue;
                 }
 
-                // Distância SIMD completa (só se o lower-bound passou)
-                int32_t distance = simd_dist_pv(bdata[vi].elements, q);
+                // Now elements are aligned, we can use simd_dist directly (aligned load)
+                int32_t distance = simd_dist(b_elements[vi].elements, q);
                 if (distance >= threshold) continue;
 
                 if (count < k) {
-                    top_k[count++] = {distance, bdata[vi].is_fraud};
+                    top_k[count++] = {distance, b_labels[vi] != 0};
                     if (count == k) {
                         std::sort(top_k, top_k + k,
                             [](const Candidate& a, const Candidate& b){ return a.dist < b.dist; });
@@ -337,7 +308,7 @@ public:
                         bail_norm = compute_bail_norm(q_norm, threshold);
                     }
                 } else {
-                    top_k[k-1] = {distance, bdata[vi].is_fraud};
+                    top_k[k-1] = {distance, b_labels[vi] != 0};
                     for (int l = k-1; l > 0 && top_k[l].dist < top_k[l-1].dist; --l)
                         std::swap(top_k[l], top_k[l-1]);
                     threshold = top_k[k-1].dist;
@@ -346,10 +317,10 @@ public:
             }
         }
 
-        std::vector<application::ports::out::SearchResult> results;
-        results.reserve(count);
-        for (int i = 0; i < count; ++i)
-            results.push_back({top_k[i].is_fraud, static_cast<float>(top_k[i].dist)});
+        for (int i = 0; i < count; ++i) {
+            results.items[i] = {top_k[i].is_fraud, static_cast<float>(top_k[i].dist)};
+        }
+        results.count = count;
         return results;
     }
 
@@ -363,39 +334,37 @@ public:
         };
 
         const size_t centroids_bytes = centroids_.size() * sizeof(Centroid);
-        const size_t buckets_meta    = buckets_.size()   * sizeof(std::vector<PaddedVector>);
-        const size_t buckets_data    = total_vectors_    * sizeof(PaddedVector);
+        const size_t buckets_meta    = buckets_.size()   * sizeof(Bucket);
+        size_t buckets_data = 0;
+        for (const auto& b : buckets_) {
+            buckets_data += b.elements.size() * sizeof(Centroid);
+            buckets_data += b.norms.size() * sizeof(uint16_t);
+            buckets_data += b.labels.size() * sizeof(uint8_t);
+        }
         const size_t total_index     = centroids_bytes + buckets_meta + buckets_data;
 
-        logging::Logger::info("[mem] sizeof(Centroid)=" + std::to_string(sizeof(Centroid)) +
-                              "B  sizeof(PaddedVector)=" + std::to_string(sizeof(PaddedVector)) + "B");
+        logging::Logger::info("[mem] sizeof(Centroid)=" + std::to_string(sizeof(Centroid)) + "B");
         logging::Logger::info("[mem] clusters=" + std::to_string(centroids_.size()) +
                               "  vectors=" + std::to_string(total_vectors_));
         logging::Logger::info("[mem] centroids       =" + fmt_mb(centroids_bytes));
-        logging::Logger::info("[mem] buckets_metadata=" + fmt_mb(buckets_meta) +
-                              "  (" + std::to_string(buckets_.size()) + " x " +
-                              std::to_string(sizeof(std::vector<PaddedVector>)) + "B header)");
+        logging::Logger::info("[mem] buckets_metadata=" + fmt_mb(buckets_meta));
         logging::Logger::info("[mem] buckets_data    =" + fmt_mb(buckets_data));
         logging::Logger::info("[mem] total_index     =" + fmt_mb(total_index));
     }
 
-    // Aplica madvise(MADV_HUGEPAGE) nos dados dos buckets para reduzir TLB misses.
-    // Deve ser chamado após load_binary() ou train_and_build().
     void apply_hugepages() {
 #ifdef __linux__
         for (auto& b : buckets_) {
-            if (!b.empty()) {
-                void* ptr = static_cast<void*>(b.data());
-                size_t len = b.size() * sizeof(PaddedVector);
-                // Alinha ao page boundary (4KB)
+            if (!b.elements.empty()) {
+                void* ptr = static_cast<void*>(b.elements.data());
+                size_t len = b.elements.size() * sizeof(Centroid);
                 uintptr_t addr = reinterpret_cast<uintptr_t>(ptr);
                 uintptr_t aligned = addr & ~(4095ULL);
                 size_t adj_len = len + (addr - aligned);
                 ::madvise(reinterpret_cast<void*>(aligned), adj_len, MADV_HUGEPAGE);
-                ::madvise(reinterpret_cast<void*>(aligned), adj_len, MADV_WILLNEED);
             }
         }
-        logging::Logger::info("[mem] madvise(MADV_HUGEPAGE) applied to bucket data");
+        logging::Logger::info("[mem] madvise(MADV_HUGEPAGE) applied to bucket elements");
 #endif
     }
 
@@ -406,8 +375,7 @@ public:
             return;
         }
 
-        // Header: versão do formato (para compatibilidade futura)
-        uint32_t version = 2;  // v2: inclui campo norm
+        uint32_t version = 3;  // v3: SoA format
         out.write(reinterpret_cast<const char*>(&version), sizeof(version));
 
         size_t nc = centroids_.size();
@@ -415,10 +383,13 @@ public:
         out.write(reinterpret_cast<const char*>(centroids_.data()), nc * sizeof(Centroid));
 
         for (const auto& b : buckets_) {
-            size_t bs = b.size();
+            size_t bs = b.elements.size();
             out.write(reinterpret_cast<const char*>(&bs), sizeof(bs));
-            if (bs > 0)
-                out.write(reinterpret_cast<const char*>(b.data()), bs * sizeof(PaddedVector));
+            if (bs > 0) {
+                out.write(reinterpret_cast<const char*>(b.elements.data()), bs * sizeof(Centroid));
+                out.write(reinterpret_cast<const char*>(b.norms.data()), bs * sizeof(uint16_t));
+                out.write(reinterpret_cast<const char*>(b.labels.data()), bs * sizeof(uint8_t));
+            }
         }
     }
 
@@ -428,8 +399,8 @@ public:
 
         uint32_t version;
         in.read(reinterpret_cast<char*>(&version), sizeof(version));
-        if (version != 2) {
-            logging::Logger::error("Binary index version mismatch (expected 2, got " +
+        if (version != 3) {
+            logging::Logger::error("Binary index version mismatch (expected 3, got " +
                                     std::to_string(version) + "). Rebuild with --prepare.");
             return false;
         }
@@ -445,9 +416,14 @@ public:
         for (size_t i = 0; i < nc; ++i) {
             size_t bs;
             in.read(reinterpret_cast<char*>(&bs), sizeof(bs));
-            buckets_[i].resize(bs);
-            if (bs > 0)
-                in.read(reinterpret_cast<char*>(buckets_[i].data()), bs * sizeof(PaddedVector));
+            if (bs > 0) {
+                buckets_[i].elements.resize(bs);
+                buckets_[i].norms.resize(bs);
+                buckets_[i].labels.resize(bs);
+                in.read(reinterpret_cast<char*>(buckets_[i].elements.data()), bs * sizeof(Centroid));
+                in.read(reinterpret_cast<char*>(buckets_[i].norms.data()), bs * sizeof(uint16_t));
+                in.read(reinterpret_cast<char*>(buckets_[i].labels.data()), bs * sizeof(uint8_t));
+            }
             total_vectors_ += bs;
         }
 
