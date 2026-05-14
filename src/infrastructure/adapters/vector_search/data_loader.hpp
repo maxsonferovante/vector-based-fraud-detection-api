@@ -51,7 +51,7 @@ public:
             out_config.max_merchant_avg_amount = FastParser::find_double(content, "max_merchant_avg_amount");
         }
 
-        // 2. MCC Risk Mapping
+        // 2. MCC Risk Mapping (fill O(1) table)
         std::ifstream mcc_file(mcc_path);
         if (mcc_file.is_open()) {
             std::string content((std::istreambuf_iterator<char>(mcc_file)), std::istreambuf_iterator<char>());
@@ -64,7 +64,11 @@ public:
                 size_t val_start = content.find_first_of("0123456789.", content.find(":", e));
                 size_t val_end = content.find_first_not_of("0123456789.", val_start);
                 std::string val_str(content.substr(val_start, val_end - val_start));
-                out_config.mcc_risk[key] = std::strtod(val_str.c_str(), nullptr);
+                
+                int mcc_idx = std::stoi(key);
+                if (mcc_idx >= 0 && mcc_idx < 10000) {
+                    out_config.mcc_risk_table[mcc_idx] = static_cast<float>(std::strtod(val_str.c_str(), nullptr));
+                }
                 current = (val_end == std::string::npos) ? content.size() : val_end;
             }
         }
