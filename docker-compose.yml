@@ -19,7 +19,7 @@ services:
       - rinha-network
 
   api1:
-    image: maxsonferovante/vector-based-fraud-detection-api:14-05-2026-01-22-33
+    image: maxsonferovante/vector-based-fraud-detection-api:13-05-2026-20-24-17
     platform: linux/amd64
     container_name: api1
     environment:
@@ -33,7 +33,7 @@ services:
       - rinha-network
 
   api2:
-    image: maxsonferovante/vector-based-fraud-detection-api:14-05-2026-01-22-33
+    image: maxsonferovante/vector-based-fraud-detection-api:13-05-2026-20-24-17
     platform: linux/amd64
     container_name: api2
     environment:
