@@ -63,11 +63,21 @@ public:
                 std::string key(content.substr(s + 1, e - s - 1));
                 size_t val_start = content.find_first_of("0123456789.", content.find(":", e));
                 size_t val_end = content.find_first_not_of("0123456789.", val_start);
-                std::string val_str(content.substr(val_start, val_end - val_start));
+                std::string_view val_str(content.data() + val_start, val_end - val_start);
                 
                 int mcc_idx = std::stoi(key);
                 if (mcc_idx >= 0 && mcc_idx < 10000) {
-                    out_config.mcc_risk_table[mcc_idx] = static_cast<float>(std::strtod(val_str.c_str(), nullptr));
+                    float risk = 0.5f;
+#if __cpp_lib_to_chars >= 201611L || defined(_MSC_VER)
+                    auto [ptr, ec] = std::from_chars(val_str.data(), val_str.data() + val_str.size(), risk);
+                    if (ec == std::errc()) {
+                        out_config.mcc_risk_table[mcc_idx] = risk;
+                    } else
+#endif
+                    {
+                        std::string val_copy(val_str);
+                        out_config.mcc_risk_table[mcc_idx] = static_cast<float>(std::strtod(val_copy.c_str(), nullptr));
+                    }
                 }
                 current = (val_end == std::string::npos) ? content.size() : val_end;
             }

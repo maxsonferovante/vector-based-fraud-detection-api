@@ -148,10 +148,19 @@ public:
             size_t len = num_end - num_start;
             if (len >= 64) break;
             
-            std::copy(object.begin() + num_start, object.begin() + num_end, buf);
-            buf[len] = '\0';
-            
-            v.push_back(std::strtof(buf, nullptr));
+            std::string_view val_str = object.substr(num_start, len);
+            float val = 0.0f;
+#if __cpp_lib_to_chars >= 201611L || defined(_MSC_VER)
+            auto [ptr, ec] = std::from_chars(val_str.data(), val_str.data() + val_str.size(), val);
+            if (ec == std::errc()) {
+                v.push_back(val);
+            } else
+#endif
+            {
+                std::copy(object.begin() + num_start, object.begin() + num_end, buf);
+                buf[len] = '\0';
+                v.push_back(std::strtof(buf, nullptr));
+            }
             
             if (object[num_end] == ']') break;
             current = num_end + 1;
