@@ -13,8 +13,14 @@ services:
     deploy:
       resources:
         limits:
+          # CORREÇÃO: aumentado de 40M → 50M
+          #
+          # Com tune.bufsize=16384 e maxconn=1024, o HAProxy precisa de:
+          #   1024 conexões × 2 buffers (req+resp) × 16384 bytes = 32MB só em buffers
+          # Somando código, tabelas internas e overhead do Alpine, 40MB era insuficiente.
+          # 50MB é conservador e ainda deixa 300MB para as duas instâncias de API.
           cpus: '0.20'
-          memory: 40M
+          memory: 50M
     networks:
       - rinha-network
 
@@ -27,6 +33,10 @@ services:
     deploy:
       resources:
         limits:
+          # O índice IVF com layout flat e 3M vetores ocupa:
+          #   3M × (32B Centroid + 2B norm + 1B label) = ~105MB
+          # + overhead da aplicação (heap, threads, simdjson): ~25MB
+          # Total em runtime: ~130MB. 150MB dá margem para o overhead PGO.
           cpus: '0.40'
           memory: 150M
     networks:
@@ -45,6 +55,10 @@ services:
           memory: 150M
     networks:
       - rinha-network
+
+# Verificação de orçamento total:
+#   CPU:    0.20 + 0.40 + 0.40 = 1.00 CPU  ✓ (limite: 1 CPU)
+#   Memória: 50M + 150M + 150M = 350MB      ✓ (limite: 350MB)
 
 networks:
   rinha-network:

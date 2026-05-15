@@ -3,14 +3,13 @@ project(vector_based_fraud_detection_api)
 
 set(CMAKE_CXX_STANDARD 26)
 
-# -march=native: local dev; Dockerfile sobrescreve com -march=x86-64-v3 para portabilidade
-set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -O3 -march=native -funroll-loops")
+# -march=native: local dev default. Use -DCMAKE_CXX_FLAGS="..." to override.
+if(NOT CMAKE_CXX_FLAGS MATCHES "-march=")
+    add_compile_options(-O3 -march=native -funroll-loops)
+endif()
 
 # ──────────────────────────────────────────────
 # PGO (Profile-Guided Optimization)
-# Uso:
-#   cmake -DPGO_GENERATE=ON ..   → gera instrumentação
-#   cmake -DPGO_USE=ON ..        → consome perfil
 # ──────────────────────────────────────────────
 option(PGO_GENERATE "Instrument with -fprofile-generate" OFF)
 option(PGO_USE      "Consume profile via -fprofile-use"  OFF)
@@ -21,12 +20,12 @@ if(PGO_GENERATE AND PGO_USE)
 endif()
 
 if(PGO_GENERATE)
-    add_compile_options(-fprofile-generate=${PGO_DIR})
-    add_link_options(-fprofile-generate=${PGO_DIR})
+    add_compile_options("-fprofile-generate=${PGO_DIR}")
+    add_link_options("-fprofile-generate=${PGO_DIR}")
     message(STATUS "PGO: instrumentation mode (generate → ${PGO_DIR})")
 elseif(PGO_USE)
-    add_compile_options(-fprofile-use=${PGO_DIR} -fprofile-correction)
-    add_link_options(-fprofile-use=${PGO_DIR} -fprofile-correction)
+    add_compile_options("-fprofile-use=${PGO_DIR}" -fprofile-correction)
+    add_link_options("-fprofile-use=${PGO_DIR}" -fprofile-correction)
     message(STATUS "PGO: optimization mode (use ← ${PGO_DIR})")
 endif()
 
@@ -87,6 +86,7 @@ target_link_libraries(vector_based_fraud_detection_api PRIVATE
     Threads::Threads
     ZLIB::ZLIB
     simdjson::simdjson
+    Boost::headers
 )
 
 if(NOT CMAKE_BINARY_DIR STREQUAL CMAKE_SOURCE_DIR)
