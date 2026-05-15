@@ -29,7 +29,7 @@ public:
         // Retrieve K nearest neighbors from the search engine
         auto neighbors = vector_search_->search(vector, 5);
 
-        if (neighbors.count == 0) {
+        if (neighbors.count < 3) {
             return { true, 0.0 };
         }
 
@@ -41,6 +41,7 @@ public:
             }
         }
 
+        // Com k=5, a transação é fraude se fraud_count >= 3.
         double fraud_score = static_cast<double>(fraud_count) / 5.0;
         bool approved = fraud_score < 0.6;
 
