@@ -32,11 +32,11 @@ namespace vector_search {
 // search() é read-only e thread-safe após a construção.
 class SimdIvfMatcher : public application::ports::out::VectorSearchPort {
 private:
-    static constexpr size_t   NUM_CLUSTERS   = 2048;
+    static constexpr size_t   NUM_CLUSTERS   = 1023;
     static constexpr size_t   PROBE_CLUSTERS = 32;  // Increased from 16 for better recall
     static constexpr float    SCALE          = 4096.0f;
-    static constexpr int      KMEANS_ITERS   = 3;
-    static constexpr size_t   PREFETCH_AHEAD = 16;
+    static constexpr int      KMEANS_ITERS   = 5;
+    static constexpr size_t   PREFETCH_AHEAD = 32;
 
     struct alignas(32) Centroid {
         int16_t elements[16];
@@ -326,48 +326,6 @@ public:
 
     size_t get_total_vectors() const { return total_vectors_; }
 
-    void log_memory_stats() const {
-        auto fmt_mb = [](size_t bytes) -> std::string {
-            char buf[32];
-            std::snprintf(buf, sizeof(buf), "%.2f MB", bytes / (1024.0 * 1024.0));
-            return std::string(buf);
-        };
-
-        const size_t centroids_bytes = centroids_.size() * sizeof(Centroid);
-        const size_t buckets_meta    = buckets_.size()   * sizeof(Bucket);
-        size_t buckets_data = 0;
-        for (const auto& b : buckets_) {
-            buckets_data += b.elements.size() * sizeof(Centroid);
-            buckets_data += b.norms.size() * sizeof(uint16_t);
-            buckets_data += b.labels.size() * sizeof(uint8_t);
-        }
-        const size_t total_index     = centroids_bytes + buckets_meta + buckets_data;
-
-        logging::Logger::info("[mem] sizeof(Centroid)=" + std::to_string(sizeof(Centroid)) + "B");
-        logging::Logger::info("[mem] clusters=" + std::to_string(centroids_.size()) +
-                              "  vectors=" + std::to_string(total_vectors_));
-        logging::Logger::info("[mem] centroids       =" + fmt_mb(centroids_bytes));
-        logging::Logger::info("[mem] buckets_metadata=" + fmt_mb(buckets_meta));
-        logging::Logger::info("[mem] buckets_data    =" + fmt_mb(buckets_data));
-        logging::Logger::info("[mem] total_index     =" + fmt_mb(total_index));
-    }
-
-    void apply_hugepages() {
-#ifdef __linux__
-        for (auto& b : buckets_) {
-            if (!b.elements.empty()) {
-                void* ptr = static_cast<void*>(b.elements.data());
-                size_t len = b.elements.size() * sizeof(Centroid);
-                uintptr_t addr = reinterpret_cast<uintptr_t>(ptr);
-                uintptr_t aligned = addr & ~(4095ULL);
-                size_t adj_len = len + (addr - aligned);
-                ::madvise(reinterpret_cast<void*>(aligned), adj_len, MADV_HUGEPAGE);
-            }
-        }
-        logging::Logger::info("[mem] madvise(MADV_HUGEPAGE) applied to bucket elements");
-#endif
-    }
-
     void save_binary(const std::string& path) {
         std::ofstream out(path, std::ios::binary);
         if (!out) {
@@ -426,10 +384,7 @@ public:
             }
             total_vectors_ += bs;
         }
-
-        bool ok = static_cast<bool>(in);
-        if (ok) apply_hugepages();
-        return ok;
+        return static_cast<bool>(in);;
     }
 };
 
