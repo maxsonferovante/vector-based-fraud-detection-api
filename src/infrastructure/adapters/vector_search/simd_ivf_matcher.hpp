@@ -41,8 +41,8 @@ namespace vector_search {
 class SimdIvfMatcher : public application::ports::out::VectorSearchPort {
 private:
     static constexpr size_t   NUM_CLUSTERS   = 1023;
-    static constexpr size_t   PROBE_CLUSTERS = 32;  // Increased from 16 for better recall
-    static constexpr float    SCALE          = 4096.0f;
+    static constexpr size_t   PROBE_CLUSTERS = 32;
+    static constexpr float    SCALE          = 8192.0f;
     static constexpr int      KMEANS_ITERS   = 5;
     static constexpr size_t   PREFETCH_AHEAD = 32;
 
@@ -113,7 +113,7 @@ private:
         double s = std::sqrt(static_cast<double>(threshold));
         auto up = static_cast<uint32_t>(s);
         if (static_cast<double>(up) < s) ++up;
-        uint64_t b = static_cast<uint64_t>(q_norm) + up + 1u;
+        uint64_t b = static_cast<uint64_t>(q_norm) + up + 6u;
         return (b > UINT32_MAX) ? UINT32_MAX : static_cast<uint32_t>(b);
     }
 
