@@ -20,6 +20,14 @@
 
 #ifdef __linux__
     #include <sys/mman.h>
+    #include <sys/stat.h>
+    #include <fcntl.h>
+    #include <unistd.h>
+#elif defined(__APPLE__)
+    #include <sys/mman.h>
+    #include <sys/stat.h>
+    #include <fcntl.h>
+    #include <unistd.h>
 #endif
 
 namespace infrastructure {
@@ -42,16 +50,44 @@ private:
         int16_t elements[16];
     };
 
-    // SoA (Struct of Arrays) format for better cache locality and SIMD alignment
+    // BucketView represents a window into the vector data.
+    // In build mode, it points to vectors. In mmap mode, it points to the mapped file.
+    struct BucketView {
+        size_t size = 0;
+        const Centroid* elements = nullptr;
+        const uint16_t* norms = nullptr;
+        const uint8_t*  labels = nullptr;
+    };
+
+    // Storage for build mode (prepare)
     struct Bucket {
-        std::vector<Centroid> elements; // Each Centroid is 16 int16_t, 32-byte aligned
+        std::vector<Centroid> elements;
         std::vector<uint16_t> norms;
         std::vector<uint8_t>  labels;
     };
 
-    std::vector<Centroid> centroids_;
-    std::vector<Bucket>   buckets_;
+    std::vector<Centroid> centroids_storage_;
+    std::vector<Bucket>   buckets_storage_;
+
+    // Views used for search
+    const Centroid* centroids_ = nullptr;
+    std::vector<BucketView> buckets_;
     size_t total_vectors_ = 0;
+
+    // mmap resources
+    void* mmap_ptr_ = nullptr;
+    size_t mmap_size_ = 0;
+
+    void cleanup_mmap() {
+        if (mmap_ptr_ && mmap_ptr_ != MAP_FAILED) {
+            munmap(mmap_ptr_, mmap_size_);
+        }
+        mmap_ptr_ = nullptr;
+        mmap_size_ = 0;
+        centroids_ = nullptr;
+        buckets_.clear();
+        total_vectors_ = 0;
+    }
 
     static inline int16_t quantize(float v) noexcept {
         float scaled = v * SCALE;
@@ -118,12 +154,17 @@ private:
 
 public:
     SimdIvfMatcher() {
-        buckets_.resize(NUM_CLUSTERS);
-        for (auto& b : buckets_) {
+        buckets_storage_.resize(NUM_CLUSTERS);
+        for (auto& b : buckets_storage_) {
             b.elements.reserve(2000);
             b.norms.reserve(2000);
             b.labels.reserve(2000);
         }
+        buckets_.resize(NUM_CLUSTERS);
+    }
+
+    ~SimdIvfMatcher() {
+        cleanup_mmap();
     }
 
     void train_and_build(const std::vector<std::pair<std::array<float, 14>, bool>>& data) {
@@ -150,9 +191,9 @@ public:
         std::iota(indices.begin(), indices.end(), 0);
         std::shuffle(indices.begin(), indices.end(), rng);
 
-        centroids_.resize(K);
+        centroids_storage_.resize(K);
         for (size_t i = 0; i < K; ++i)
-            std::copy(vecs[indices[i]].e, vecs[indices[i]].e + 16, centroids_[i].elements);
+            std::copy(vecs[indices[i]].e, vecs[indices[i]].e + 16, centroids_storage_[i].elements);
 
         std::vector<size_t> assignments(N);
 
@@ -161,7 +202,7 @@ public:
                 int32_t best_dist = INT32_MAX;
                 size_t  best_c   = 0;
                 for (size_t c = 0; c < K; ++c) {
-                    int32_t d = simd_dist(vecs[i].e, centroids_[c].elements);
+                    int32_t d = simd_dist(vecs[i].e, centroids_storage_[c].elements);
                     if (d < best_dist) { best_dist = d; best_c = c; }
                 }
                 assignments[i] = best_c;
@@ -180,13 +221,13 @@ public:
             for (size_t c = 0; c < K; ++c) {
                 if (accum[c].count == 0) continue;
                 for (int j = 0; j < 16; ++j)
-                    centroids_[c].elements[j] = static_cast<int16_t>(
+                    centroids_storage_[c].elements[j] = static_cast<int16_t>(
                         accum[c].sum[j] / static_cast<int64_t>(accum[c].count));
             }
         }
 
         total_vectors_ = 0;
-        for (auto& b : buckets_) {
+        for (auto& b : buckets_storage_) {
             b.elements.clear();
             b.norms.clear();
             b.labels.clear();
@@ -209,18 +250,27 @@ public:
             total_vectors_++;
         }
 
+        centroids_ = centroids_storage_.data();
+        buckets_.resize(K);
+
         for (size_t i = 0; i < K; ++i) {
             std::sort(temp_buckets[i].begin(), temp_buckets[i].end(),
                 [](const SortingItem& a, const SortingItem& b) { return a.norm < b.norm; });
             
             for (const auto& item : temp_buckets[i]) {
-                buckets_[i].elements.push_back(item.elements);
-                buckets_[i].norms.push_back(item.norm);
-                buckets_[i].labels.push_back(item.is_fraud ? 1 : 0);
+                buckets_storage_[i].elements.push_back(item.elements);
+                buckets_storage_[i].norms.push_back(item.norm);
+                buckets_storage_[i].labels.push_back(item.is_fraud ? 1 : 0);
             }
-            buckets_[i].elements.shrink_to_fit();
-            buckets_[i].norms.shrink_to_fit();
-            buckets_[i].labels.shrink_to_fit();
+            buckets_storage_[i].elements.shrink_to_fit();
+            buckets_storage_[i].norms.shrink_to_fit();
+            buckets_storage_[i].labels.shrink_to_fit();
+
+            // Setup view
+            buckets_[i].size = buckets_storage_[i].elements.size();
+            buckets_[i].elements = buckets_storage_[i].elements.data();
+            buckets_[i].norms = buckets_storage_[i].norms.data();
+            buckets_[i].labels = buckets_storage_[i].labels.data();
         }
 
         logging::Logger::info("Index ready: vectors=" + std::to_string(total_vectors_) +
@@ -252,7 +302,7 @@ public:
         struct ClusterDist { int32_t dist; uint16_t id; };
         ClusterDist near_clusters[NUM_CLUSTERS];
 
-        const size_t nc = centroids_.size();
+        const size_t nc = buckets_.size();
         for (size_t c = 0; c < nc; ++c)
             near_clusters[c] = { simd_dist(q, centroids_[c].elements), static_cast<uint16_t>(c) };
 
@@ -268,12 +318,16 @@ public:
 
         for (size_t p = 0; p < PROBE_CLUSTERS && p < nc; ++p) {
             const auto& bucket = buckets_[near_clusters[p].id];
-            const size_t bsize = bucket.elements.size();
+            const size_t bsize = bucket.size;
             if (bsize == 0) continue;
 
-            const Centroid* b_elements = bucket.elements.data();
-            const uint16_t* b_norms = bucket.norms.data();
-            const uint8_t*  b_labels = bucket.labels.data();
+            const Centroid* b_elements = bucket.elements;
+            const uint16_t* b_norms = bucket.norms;
+            const uint8_t*  b_labels = bucket.labels;
+
+#if defined(__GNUC__) || defined(__clang__)
+            b_elements = reinterpret_cast<const Centroid*>(__builtin_assume_aligned(b_elements, 32));
+#endif
 
             for (size_t vi = 0; vi < bsize; ++vi) {
                 if (static_cast<uint32_t>(b_norms[vi]) >= bail_norm) break;
@@ -333,58 +387,143 @@ public:
             return;
         }
 
-        uint32_t version = 3;  // v3: SoA format
+        uint32_t version = 4;
         out.write(reinterpret_cast<const char*>(&version), sizeof(version));
+        
+        char pad12[12] = {0};
+        out.write(pad12, 12);
 
-        size_t nc = centroids_.size();
+        size_t nc = buckets_.size();
         out.write(reinterpret_cast<const char*>(&nc), sizeof(nc));
-        out.write(reinterpret_cast<const char*>(centroids_.data()), nc * sizeof(Centroid));
+        out.write(reinterpret_cast<const char*>(&total_vectors_), sizeof(total_vectors_));
+        // Offset 32.
 
-        for (const auto& b : buckets_) {
-            size_t bs = b.elements.size();
-            out.write(reinterpret_cast<const char*>(&bs), sizeof(bs));
-            if (bs > 0) {
-                out.write(reinterpret_cast<const char*>(b.elements.data()), bs * sizeof(Centroid));
-                out.write(reinterpret_cast<const char*>(b.norms.data()), bs * sizeof(uint16_t));
-                out.write(reinterpret_cast<const char*>(b.labels.data()), bs * sizeof(uint8_t));
-            }
+        // 1. Centroids (starts at 32)
+        out.write(reinterpret_cast<const char*>(centroids_), nc * sizeof(Centroid));
+
+        // 2. Bucket sizes
+        std::vector<size_t> sizes(nc);
+        for (size_t i = 0; i < nc; ++i) sizes[i] = buckets_[i].size;
+        out.write(reinterpret_cast<const char*>(sizes.data()), nc * sizeof(size_t));
+
+        // Align to 32 bytes before elements
+        size_t current_pos = static_cast<size_t>(out.tellp());
+        size_t align_pad = (32 - (current_pos % 32)) % 32;
+        if (align_pad > 0) {
+            char p[32] = {0};
+            out.write(p, align_pad);
+        }
+
+        // 3. All Elements
+        for (size_t i = 0; i < nc; ++i) {
+            if (buckets_[i].size > 0)
+                out.write(reinterpret_cast<const char*>(buckets_[i].elements), 
+                          buckets_[i].size * sizeof(Centroid));
+        }
+
+        // 4. All Norms
+        for (size_t i = 0; i < nc; ++i) {
+            if (buckets_[i].size > 0)
+                out.write(reinterpret_cast<const char*>(buckets_[i].norms), 
+                          buckets_[i].size * sizeof(uint16_t));
+        }
+
+        // 5. All Labels
+        for (size_t i = 0; i < nc; ++i) {
+            if (buckets_[i].size > 0)
+                out.write(reinterpret_cast<const char*>(buckets_[i].labels), 
+                          buckets_[i].size * sizeof(uint8_t));
         }
     }
 
     bool load_binary(const std::string& path) {
-        std::ifstream in(path, std::ios::binary);
-        if (!in) return false;
+        cleanup_mmap();
 
-        uint32_t version;
-        in.read(reinterpret_cast<char*>(&version), sizeof(version));
-        if (version != 3) {
-            logging::Logger::error("Binary index version mismatch (expected 3, got " +
-                                    std::to_string(version) + "). Rebuild with --prepare.");
+        int fd = open(path.c_str(), O_RDONLY);
+        if (fd == -1) return false;
+
+        struct stat sb;
+        if (fstat(fd, &sb) == -1) {
+            close(fd);
+            return false;
+        }
+        mmap_size_ = sb.st_size;
+
+#ifdef __linux__
+        mmap_ptr_ = mmap(nullptr, mmap_size_, PROT_READ, MAP_SHARED | MAP_POPULATE, fd, 0);
+#else
+        mmap_ptr_ = mmap(nullptr, mmap_size_, PROT_READ, MAP_SHARED, fd, 0);
+#endif
+        close(fd);
+
+        if (mmap_ptr_ == MAP_FAILED) {
+            mmap_ptr_ = nullptr;
             return false;
         }
 
-        size_t nc;
-        in.read(reinterpret_cast<char*>(&nc), sizeof(nc));
-        centroids_.resize(nc);
-        in.read(reinterpret_cast<char*>(centroids_.data()), nc * sizeof(Centroid));
+        const char* base = static_cast<const char*>(mmap_ptr_);
+        size_t offset = 0;
 
-        total_vectors_ = 0;
-        buckets_.clear();
-        buckets_.resize(nc);
-        for (size_t i = 0; i < nc; ++i) {
-            size_t bs;
-            in.read(reinterpret_cast<char*>(&bs), sizeof(bs));
-            if (bs > 0) {
-                buckets_[i].elements.resize(bs);
-                buckets_[i].norms.resize(bs);
-                buckets_[i].labels.resize(bs);
-                in.read(reinterpret_cast<char*>(buckets_[i].elements.data()), bs * sizeof(Centroid));
-                in.read(reinterpret_cast<char*>(buckets_[i].norms.data()), bs * sizeof(uint16_t));
-                in.read(reinterpret_cast<char*>(buckets_[i].labels.data()), bs * sizeof(uint8_t));
-            }
-            total_vectors_ += bs;
+        uint32_t version = *reinterpret_cast<const uint32_t*>(base + offset);
+        if (version != 4) {
+            logging::Logger::error("Binary index version mismatch (expected 4, got " +
+                                    std::to_string(version) + "). Rebuild with --prepare.");
+            cleanup_mmap();
+            return false;
         }
-        return static_cast<bool>(in);;
+        offset += 16; // skip version and pad
+
+        size_t nc = *reinterpret_cast<const size_t*>(base + offset);
+        offset += sizeof(size_t);
+
+        total_vectors_ = *reinterpret_cast<const size_t*>(base + offset);
+        offset += sizeof(size_t);
+
+        // 1. Centroids (at 32)
+        centroids_ = reinterpret_cast<const Centroid*>(base + offset);
+        offset += nc * sizeof(Centroid);
+
+        // 2. Bucket sizes
+        const size_t* sizes = reinterpret_cast<const size_t*>(base + offset);
+        offset += nc * sizeof(size_t);
+
+        // Align to 32 bytes
+        offset = (offset + 31) & ~static_cast<size_t>(31);
+
+        buckets_.resize(nc);
+
+        // 3. All Elements
+        const Centroid* all_elements = reinterpret_cast<const Centroid*>(base + offset);
+        offset += total_vectors_ * sizeof(Centroid);
+
+        // 4. All Norms
+        const uint16_t* all_norms = reinterpret_cast<const uint16_t*>(base + offset);
+        offset += total_vectors_ * sizeof(uint16_t);
+
+        // 5. All Labels
+        const uint8_t* all_labels = reinterpret_cast<const uint8_t*>(base + offset);
+
+        size_t element_offset = 0;
+        size_t norm_offset = 0;
+        size_t label_offset = 0;
+
+        for (size_t i = 0; i < nc; ++i) {
+            buckets_[i].size = sizes[i];
+            if (sizes[i] > 0) {
+                buckets_[i].elements = all_elements + element_offset;
+                buckets_[i].norms = all_norms + norm_offset;
+                buckets_[i].labels = all_labels + label_offset;
+                element_offset += sizes[i];
+                norm_offset += sizes[i];
+                label_offset += sizes[i];
+            } else {
+                buckets_[i].elements = nullptr;
+                buckets_[i].norms = nullptr;
+                buckets_[i].labels = nullptr;
+            }
+        }
+
+        return true;
     }
 };
 
